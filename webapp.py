@@ -775,7 +775,7 @@ def render_admin(user: dict, flash: str = "", error: bool = False) -> Response:
                 rows_html += f"""
         <div class="list-row">
             <div class="list-main"><b>{esc(person['nickname'])}</b>
-                <span class="meta">@{esc(person['username'])} · {person['created_at'][11:16]}</span></div>
+                <span class="meta">@{esc(person['username'])}</span></div>
             <form method="POST" action="/checkin/cancel/{person['id']}">
                 <button class="small ghost">취소</button>
             </form>
