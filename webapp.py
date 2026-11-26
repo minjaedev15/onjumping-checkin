@@ -111,7 +111,8 @@ body {
 .card > h2 { margin: 0 0 14px; font-size: 18px; letter-spacing: -0.3px; }
 .card > h2:last-child { margin-bottom: 0; }
 
-.slots { display: grid; grid-template-columns: repeat(auto-fit, minmax(215px, 1fr)); gap: 14px; }
+.slots { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.container.wide .slots { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .slots .card { margin-bottom: 0; }
 
 h1, h2, h3 { font-weight: 700; }
@@ -254,6 +255,10 @@ button.gray { background: #eef0f4; color: #4a4f5c; }
 
 .empty { color: #8a8f9c; font-size: 14px; margin: 10px 0 0; }
 
+@media(max-width: 860px) {
+    .container.wide .slots { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
 @media(max-width: 560px) {
     .topbar-inner { padding: 10px 14px 8px; gap: 8px; }
     .brand { font-size: 17px; }
@@ -262,7 +267,7 @@ button.gray { background: #eef0f4; color: #4a4f5c; }
     .who { font-size: 13px; }
     .container { padding: 0 12px; margin: 18px auto 36px; }
     .card { padding: 16px; border-radius: 14px; }
-    .slots { grid-template-columns: 1fr; }
+    .slots, .container.wide .slots { grid-template-columns: 1fr; }
     .week-grid { gap: 4px; }
     .week-grid select { font-size: 13px; padding: 10px 1px; }
     .week-grid .day { font-size: 12px; }
@@ -416,7 +421,7 @@ ADMIN_TABS = [
 
 def header(user: dict | None, active: str | None) -> str:
     tabs = []
-    for key, href, label in MEMBER_TABS:
+    for key, href, label in (MEMBER_TABS if user else []):
         cls = "tab active" if key == active else "tab"
         tabs.append(f'<a class="{cls}" href="{href}">{label}</a>')
     if user and user["is_admin"]:
