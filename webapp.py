@@ -111,7 +111,7 @@ body {
 .card > h2 { margin: 0 0 14px; font-size: 18px; letter-spacing: -0.3px; }
 .card > h2:last-child { margin-bottom: 0; }
 
-.slots { display: grid; grid-template-columns: repeat(auto-fit, minmax(290px, 1fr)); gap: 14px; }
+.slots { display: grid; grid-template-columns: repeat(auto-fit, minmax(215px, 1fr)); gap: 14px; }
 .slots .card { margin-bottom: 0; }
 
 h1, h2, h3 { font-weight: 700; }
@@ -148,7 +148,8 @@ button, .button {
 button:hover, .button:hover { filter: brightness(0.94); }
 button:disabled { background: #c7cbd6; cursor: not-allowed; }
 button.small, .button.small { padding: 8px 12px; font-size: 14px; border-radius: 8px; }
-button.soft { background: #eef0ff; color: #5865f2; }
+button.soft, .button.soft { background: #eef0ff; color: #5865f2; }
+button.soft:hover, .button.soft:hover { background: #e3e7ff; }
 button.danger { background: #e74c3c; }
 button.ghost { background: #fff; color: #c0392b; border: 1px solid #f0c4bd; }
 button.gray { background: #eef0f4; color: #4a4f5c; }
