@@ -386,6 +386,7 @@ fieldset.field-days { border: 0; margin: 0; padding: 0; }
 .admin { padding-top: 46px; }
 .actions-col { width: 96px; }
 .data-table td.actions { text-align: right; white-space: nowrap; }
+.data-table td.actions .link-btn + .link-btn { margin-left: 12px; }
 .data-table tr.editing { background: #FBFAF7; }
 .data-table input[type="text"] { padding: 5px 8px; font-size: 12.5px; }
 
@@ -397,6 +398,8 @@ fieldset.field-days { border: 0; margin: 0; padding: 0; }
   padding: 14px 0 0;
 }
 .inline-form input[name="name"] { width: 130px; }
+.inline-form select { width: auto; min-width: 210px; }
+.inline-form input[name="nickname"] { width: 140px; }
 .inline-form input[name="target_slot"] { width: 240px; }
 .inline-form .day-picks { margin-right: 4px; }
 
@@ -695,7 +698,16 @@ body.big-font .data-table th, body.big-font .data-table td { font-size: 16px; }
 .cal-cell.empty { border: 0; }
 
 /* 설정 */
-.prefs-grid { display: grid; grid-template-columns: 1fr auto; gap: 28px; align-items: start; padding-top: 16px; }
+.prefs-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(190px, 260px);
+  gap: 28px;
+  align-items: end;
+  padding-top: 16px;
+}
+.prefs-form { min-width: 0; }
+.prefs-form label { min-width: 0; }
+.prefs-toggles { justify-self: end; }
 .prefs-form { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; }
 .prefs-form label { flex: 1; min-width: 180px; }
 .prefs-toggles { display: flex; flex-direction: column; gap: 14px; }
