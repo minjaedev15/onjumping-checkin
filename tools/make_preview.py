@@ -114,7 +114,7 @@ def fixture(role: str) -> dict:
         "slots": SLOTS,
         "day": DAY,
         "status": {
-            "next_run_at": "2026-11-27T21:01+09:00",
+            "next_run_at": "2026-11-26T21:01+09:00",
             "schedule": CONFIG["schedule"],
             "slot_id": "third", "slot": SLOTS[2]["label"], "slot_time": "18:30",
             "weekly": CONFIG["schedule"]["weekly"],

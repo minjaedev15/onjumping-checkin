@@ -404,6 +404,7 @@ function renderWeekly(container, weekly) {
 }
 
 function renderSettings() {
+  $("#settings-panel").hidden = !isAdmin();
   if (!isAdmin()) return;
   const cfg = state.config || {};
   $("#set-time").value = cfg.schedule?.at || "21:01";
