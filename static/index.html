@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>온점핑 · 출석 예약기</title>
+<link rel="preconnect" href="https://cdn.jsdelivr.net" />
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css" />
+<link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+<div class="page">
+
+  <header class="masthead">
+    <div class="brand">
+      <svg class="brand-mark" viewBox="0 0 28 28" aria-hidden="true">
+        <rect x="1" y="1" width="26" height="26" rx="2"></rect>
+        <path d="M8 17.5 12.2 11l3.2 4.4L20 8"></path>
+      </svg>
+      <div class="brand-text">
+        <h1>온점핑 <span class="brand-dim">출석 예약</span></h1>
+        <p class="brand-sub">탕정지중해마을 · 밴드 선착순 예약</p>
+      </div>
+    </div>
+    <div class="masthead-right">
+      <div class="clock-block">
+        <span class="clock" id="clock">--:--</span>
+        <span class="clock-sub" id="date-label">불러오는 중</span>
+      </div>
+      <div class="account" id="account-chip" hidden>
+        <span class="account-name" data-account-name></span>
+        <span class="role-tag" data-account-role></span>
+      </div>
+      <button class="btn btn-ghost" id="switch-account" type="button" hidden>계정 바꾸기</button>
+    </div>
+  </header>
+
+  <nav class="tabs" id="tabs" hidden>
+    <button class="tab is-active" type="button" data-tab="today">오늘 출석</button>
+    <button class="tab" type="button" data-tab="more" id="tab-more-label">내 기록</button>
+  </nav>
+
+  <main>
+    <!-- ================= 오늘 출석 ================= -->
+    <div id="view-today">
+      <section class="notice" id="notice-band" hidden>
+        <div class="notice-rule" aria-hidden="true"></div>
+        <div class="notice-body">
+          <p class="eyebrow">오늘의 공지</p>
+          <h2 class="notice-title" id="notice-title"></h2>
+          <p class="notice-text" id="notice-text"></p>
+          <p class="notice-meta" id="notice-meta"></p>
+        </div>
+        <div class="notice-actions" id="notice-actions" hidden>
+          <button class="link-btn" type="button" data-notice-edit>수정</button>
+          <button class="link-btn danger" type="button" data-notice-delete>삭제</button>
+        </div>
+      </section>
+      <section class="notice notice-empty" id="notice-empty" hidden>
+        <div class="notice-rule" aria-hidden="true"></div>
+        <div class="notice-body">
+          <p class="eyebrow">오늘의 공지</p>
+          <p class="notice-text muted">등록된 공지가 없습니다.</p>
+        </div>
+      </section>
+
+      <p class="holiday-banner" id="holiday-banner" hidden>
+        오늘은 전체 휴강입니다. 네 타임 모두 쉬어 갑니다.
+      </p>
+
+      <section class="runline" id="runline" aria-label="다음 실행 정보">
+        <dl>
+          <div><dt>다음 자동 예약</dt><dd id="next-run" class="mono">—</dd></div>
+          <div><dt>대상 타임</dt><dd id="target-slot">—</dd></div>
+          <div><dt>타임 정원</dt><dd id="capacity" class="mono">—</dd></div>
+          <div><dt>밴드 로그인</dt><dd id="login-state">—</dd></div>
+        </dl>
+      </section>
+
+      <div class="columns">
+        <section class="col-main">
+          <!-- 일반 유저: 큰 타임 카드 -->
+          <div id="member-cards" hidden>
+            <div class="section-head">
+              <h2>오늘의 타임 <span class="head-date" id="day-label-member"></span></h2>
+            </div>
+            <div class="autocheck">
+              <label class="big-toggle">
+                <input type="checkbox" id="auto-toggle" />
+                <span class="bt-track" aria-hidden="true"><span class="bt-knob"></span></span>
+                <span class="bt-text">평일 밤 9시 자동 출석 예약</span>
+              </label>
+              <p class="autocheck-next" id="auto-next"></p>
+              <div class="weekly" id="member-weekly"></div>
+            </div>
+            <div class="cards" id="slot-cards"></div>
+            <div class="shake-row" id="shake-row">
+              <div class="shake-copy">
+                <h3>오늘의 쉐이크 찜하기</h3>
+                <p class="shake-desc">운동 끝나고 먹을 맛을 골라 두세요.</p>
+              </div>
+              <div class="flavor-picks" id="flavor-picks">
+                <button class="flavor" type="button" data-flavor="초코">초코</button>
+                <button class="flavor" type="button" data-flavor="바닐라">바닐라</button>
+                <button class="flavor" type="button" data-flavor="쿠키">쿠키</button>
+                <button class="flavor" type="button" data-flavor="딸기">딸기</button>
+              </div>
+              <p class="shake-status" id="shake-status"></p>
+            </div>
+          </div>
+
+          <!-- 관리자: 타임표 -->
+          <div id="admin-slots" hidden>
+            <div class="section-head">
+              <h2>타임표 <span class="head-date" id="day-label"></span></h2>
+              <div class="head-controls">
+                <label class="toggle" id="holiday-toggle-wrap">
+                  <input type="checkbox" id="holiday-toggle" />
+                  <span class="toggle-track" aria-hidden="true"><span class="toggle-knob"></span></span>
+                  <span class="toggle-label">오늘 전체 휴강</span>
+                </label>
+                <label class="toggle" id="schedule-toggle-wrap">
+                  <input type="checkbox" id="schedule-toggle" />
+                  <span class="toggle-track" aria-hidden="true"><span class="toggle-knob"></span></span>
+                  <span class="toggle-label">자동 예약</span>
+                </label>
+              </div>
+            </div>
+            <table class="slot-table">
+              <thead>
+                <tr>
+                  <th scope="col">타임</th>
+                  <th scope="col">시각</th>
+                  <th scope="col" class="num">정원</th>
+                  <th scope="col" class="num">인원</th>
+                  <th scope="col">상태</th>
+                  <th scope="col" class="actions-col"></th>
+                </tr>
+              </thead>
+              <tbody id="slot-body"></tbody>
+            </table>
+            <div class="week-strip">
+              <div class="week-strip-head">
+                <span class="eyebrow">예약 글 확인</span>
+                <span class="mono" id="week-time">21:01</span>
+              </div>
+              <div class="day-chips" id="week-days"></div>
+              <p class="note">
+                전날 밤 <span class="mono" id="week-time-2">21:01</span>에 올라오는 다음 날 예약 글에서
+                <span class="mono" id="slot-inline">18:30</span> 타임을 잡습니다. 금·토요일 밤은 쉼.
+              </p>
+            </div>
+          </div>
+        </section>
+
+        <aside class="col-side" id="side-panel">
+          <div class="panel" id="dry-panel">
+            <div class="panel-head">
+              <h3>미리 확인</h3>
+              <span class="panel-hint">실제 예약 없음</span>
+            </div>
+            <p class="panel-desc" id="dry-desc">지금 밴드 글을 읽어 어떤 타임에 들어갈 수 있는지만 봅니다.</p>
+            <button class="btn btn-dark btn-lg" id="run-dry" type="button">지금 확인하기</button>
+            <pre class="console mono" id="dry-output" aria-live="polite">대기 중</pre>
+          </div>
+
+          <div class="panel" id="settings-panel" hidden>
+            <div class="panel-head">
+              <h3>자동 예약 설정</h3>
+              <span class="panel-hint" id="settings-state"></span>
+            </div>
+            <form id="settings-form" class="settings-form">
+              <div class="field-row">
+                <label>
+                  <span class="field-label">확인 시각 (전날 밤)</span>
+                  <input type="time" name="at" id="set-time" class="mono" />
+                </label>
+                <label>
+                  <span class="field-label">정원</span>
+                  <input type="text" class="mono" value="11명 고정" readonly />
+                </label>
+              </div>
+              <p class="field-label">요일별 타임 (수업 당일 기준)</p>
+              <div class="weekly" id="admin-weekly"></div>
+              <div class="form-foot">
+                <button class="btn" type="submit">저장</button>
+                <span class="form-msg" id="settings-msg"></span>
+              </div>
+            </form>
+          </div>
+        </aside>
+      </div>
+    </div>
+
+    <!-- ================= 내 기록 / 운영 ================= -->
+    <div id="view-more" hidden>
+      <!-- 일반 유저 기록 -->
+      <section id="history-section" hidden>
+        <div class="section-head"><h2>내 출석 기록</h2><span class="panel-hint" id="streak-label"></span></div>
+        <div class="streak-strip">
+          <span class="streak-fire" aria-hidden="true">🔥</span>
+          <span class="streak-num mono" id="streak-count">0</span>
+          <span class="streak-text">일 연속 출석</span>
+        </div>
+        <div class="calendar" id="calendar"></div>
+        <table class="log-table">
+          <thead>
+            <tr><th scope="col">날짜</th><th scope="col">타임</th><th scope="col">상태</th></tr>
+          </thead>
+          <tbody id="history-body"></tbody>
+        </table>
+      </section>
+
+      <!-- 관리자: 쉐이크 주문 -->
+      <section id="shakes-admin" hidden>
+        <div class="section-head"><h2>오늘의 쉐이크 주문</h2><span class="panel-hint" id="shake-count"></span></div>
+        <ul class="order-list" id="order-list"></ul>
+      </section>
+
+      <!-- 모두: 내 프로필 / 접근성 -->
+      <section id="prefs-panel">
+        <div class="section-head"><h2>내 설정</h2></div>
+        <div class="prefs-grid">
+          <form id="profile-form" class="prefs-form">
+            <label>
+              <span class="field-label">닉네임</span>
+              <input type="text" name="nickname" id="set-nickname" maxlength="20" placeholder="닉네임" />
+            </label>
+            <button class="btn" type="submit">닉네임 바꾸기</button>
+            <span class="form-msg" id="profile-msg"></span>
+          </form>
+          <div class="prefs-toggles">
+            <label class="big-toggle">
+              <input type="checkbox" id="big-font" />
+              <span class="bt-track" aria-hidden="true"><span class="bt-knob"></span></span>
+              <span class="bt-text">글씨 더 크게</span>
+            </label>
+            <label class="big-toggle">
+              <input type="checkbox" id="voice-on" />
+              <span class="bt-track" aria-hidden="true"><span class="bt-knob"></span></span>
+              <span class="bt-text">음성 안내</span>
+            </label>
+          </div>
+        </div>
+      </section>
+
+      <!-- 로그 -->
+      <section class="logs">
+        <div class="section-head">
+          <h2>예약 실행 로그</h2>
+          <span class="panel-hint mono" id="log-count"></span>
+        </div>
+        <table class="log-table">
+          <thead>
+            <tr>
+              <th scope="col">시각</th><th scope="col">대상일</th><th scope="col">타임</th>
+              <th scope="col">상태</th><th scope="col" class="num">인원</th><th scope="col">메모</th>
+            </tr>
+          </thead>
+          <tbody id="log-body">
+            <tr><td colspan="6" class="empty">기록이 없습니다.</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- 관리자: 유저 관리 -->
+      <section class="admin" id="users-section" hidden>
+        <div class="section-head"><h2>일반 유저 관리</h2><span class="panel-hint">관리자 전용</span></div>
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th scope="col">이름</th><th scope="col">닉네임</th><th scope="col">타임</th>
+              <th scope="col">요일</th><th scope="col" class="actions-col"></th>
+            </tr>
+          </thead>
+          <tbody id="user-body"></tbody>
+        </table>
+        <form id="user-form" class="inline-form">
+          <input type="text" name="name" placeholder="이름" required maxlength="20" />
+          <input type="text" name="nickname" placeholder="닉네임" maxlength="20" />
+          <select name="target_slot" id="new-user-slot"></select>
+          <div class="day-picks" id="new-user-days">
+            <label><input type="checkbox" value="mon" checked />월</label>
+            <label><input type="checkbox" value="tue" checked />화</label>
+            <label><input type="checkbox" value="wed" checked />수</label>
+            <label><input type="checkbox" value="thu" checked />목</label>
+            <label><input type="checkbox" value="fri" checked />금</label>
+          </div>
+          <button class="btn" type="submit">유저 추가</button>
+          <span class="form-msg" id="user-msg"></span>
+        </form>
+      </section>
+
+      <!-- 관리자: 공지 관리 -->
+      <section class="admin" id="notices-section" hidden>
+        <div class="section-head"><h2>공지 관리</h2><span class="panel-hint">관리자 전용</span></div>
+        <form id="notice-form" class="notice-form">
+          <input type="hidden" name="id" id="notice-id" />
+          <div class="notice-form-row">
+            <input type="text" name="title" id="notice-input-title" placeholder="공지 제목" required maxlength="80" />
+            <input type="date" name="posted_on" id="notice-input-date" />
+          </div>
+          <textarea name="body" id="notice-input-body" rows="2" placeholder="내용 (선택)"></textarea>
+          <div class="form-foot">
+            <button class="btn btn-dark" type="submit" id="notice-submit">공지 등록</button>
+            <button class="btn" type="button" id="notice-cancel" hidden>취소</button>
+            <span class="form-msg" id="notice-msg"></span>
+          </div>
+        </form>
+        <ul class="notice-list" id="notice-list"></ul>
+      </section>
+    </div>
+  </main>
+
+  <footer class="foot">
+    <span>온점핑 출석 예약 · <span class="mono">python server.py</span></span>
+    <span class="mono" id="foot-state"></span>
+  </footer>
+</div>
+
+<div class="overlay" id="login" hidden>
+  <div class="login-card" role="dialog" aria-modal="true" aria-labelledby="login-title">
+    <p class="eyebrow">계정 선택</p>
+    <h2 id="login-title">누구로 사용할까요?</h2>
+    <p class="login-desc">관리자는 공지·유저·휴강을 관리하고, 일반 유저는 공지 확인과 출석 체크만 합니다.</p>
+    <ul class="account-list" id="account-list"></ul>
+  </div>
+</div>
+
+<div class="toast-wrap" id="toast-wrap" aria-live="polite"></div>
+<div class="stamp-overlay" id="stamp-overlay" hidden>
+  <div class="stamp">
+    <span class="stamp-main">출석 완료</span>
+    <span class="stamp-sub" id="stamp-sub"></span>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

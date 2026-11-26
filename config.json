@@ -1,0 +1,27 @@
+{
+  "band_name": "On점핑(탕정지중해마을)",
+  "band_url": "https://www.band.us/band/80346953/post",
+  "slot_id": "third",
+  "days_ahead": 1,
+  "user_id": 1,
+  "headless": true,
+  "timeout_ms": 25000,
+  "schedule": {
+    "enabled": true,
+    "weekdays": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "at": "21:01",
+    "weekly": {
+      "mon": "third",
+      "tue": "third",
+      "wed": "third",
+      "thu": "third",
+      "fri": "third"
+    }
+  }
+}
