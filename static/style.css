@@ -624,7 +624,6 @@ body.big-font .data-table th, body.big-font .data-table td { font-size: 16px; }
   font-size: 13.5px; color: var(--muted); letter-spacing: 0.04em;
 }
 .weekly-row select { flex: 1; min-height: 44px; }
-#member-weekly { grid-template-columns: minmax(0, 1fr); max-width: 440px; }
 
 /* 큰 토글 */
 .big-toggle { display: inline-flex; align-items: center; gap: 12px; cursor: pointer; user-select: none; }
