@@ -401,7 +401,7 @@ def read_form(environ) -> dict[str, list[str]]:
 # --------------------------------------------------------------------------- #
 
 MEMBER_TABS = [
-    ("home", "/", "출석"),
+    ("checkin", "/checkin", "출석하기"),
     ("notices", "/notices", "공지"),
     ("auto", "/auto", "자동출석"),
 ]
@@ -409,6 +409,7 @@ ADMIN_TABS = [
     ("admin", "/admin", "출석·휴강"),
     ("admin-notices", "/admin/notices", "공지 관리"),
     ("admin-users", "/admin/users", "회원"),
+    ("admin-users-new", "/admin/users/new", "회원 추가"),
 ]
 
 
@@ -513,7 +514,6 @@ def _people_chips(people: list[dict], me_id: int) -> str:
 def render_index(user: dict, flash: str = "", error: bool = False) -> Response:
     today = store.kst_today()
     state = store.get_day(today)
-    notices = store.list_notices()
     rows = store.list_attendance(today)
 
     mine_by_slot = {row["slot_id"]: row for row in rows if row["user_id"] == user["id"]}
@@ -521,12 +521,9 @@ def render_index(user: dict, flash: str = "", error: bool = False) -> Response:
     for row in rows:
         by_slot.setdefault(row["slot_id"], []).append(row)
 
-    parts = [page_head("오늘 출석", f"{date_label(today)} · 타임마다 11명 선착순")]
+    parts = [page_head("출석하기", f"{date_label(today)} · 타임마다 11명 선착순")]
 
-    if state["closed_all"]:
-        parts.append('<div class="banner">🚫 오늘은 전체 휴강입니다.</div>')
-
-    today_notice = next((n for n in notices if n["posted_on"] == today), None)
+    today_notice = next((n for n in store.list_notices() if n["posted_on"] == today), None)
     if today_notice:
         parts.append(f"""
 <div class="card">
@@ -534,25 +531,78 @@ def render_index(user: dict, flash: str = "", error: bool = False) -> Response:
     <p class="notice-body">{esc(today_notice['body'])}</p>
     <p class="small">{esc(today_notice['author'])} · {today_notice['posted_on']}</p>
 </div>""")
+    else:
+        parts.append("""
+<div class="card">
+    <h2>📢 오늘의 공지</h2>
+    <p class="empty">오늘 올라온 공지가 없습니다.</p>
+</div>""")
+
+    if state["closed_all"]:
+        parts.append('<div class="banner">🚫 오늘은 전체 휴강입니다.</div>')
+
+    # 시간 선택 출석 카드
+    options = []
+    for slot in state["slots"]:
+        marks = []
+        if slot["blocked"]:
+            marks.append("휴강")
+        if slot["full"]:
+            marks.append("마감")
+        if slot["id"] in mine_by_slot:
+            marks.append("출석함")
+        suffix = f" ({' · '.join(marks)})" if marks else ""
+        unavailable = bool(marks) or state["closed_all"]
+        options.append(
+            f'<option value="{slot["id"]}"{" disabled" if unavailable else ""}>'
+            f'{slot["time"]} {slot["name"]}{suffix}</option>'
+        )
+    open_slots = [s for s in state["slots"] if s["open"] and s["id"] not in mine_by_slot]
+    select_disabled = "" if open_slots else " disabled"
+    button_disabled = "" if open_slots else " disabled"
+    if state["closed_all"]:
+        hint = "오늘은 전체 휴강이라 출석할 수 없습니다."
+    elif not open_slots:
+        hint = "지금 선택할 수 있는 타임이 없습니다."
+    else:
+        hint = "타임을 고르고 출석하기를 누르세요. 타임마다 11명 선착순입니다."
+
+    my_rows = ""
+    for slot in state["slots"]:
+        record = mine_by_slot.get(slot["id"])
+        if not record:
+            continue
+        my_rows += f"""
+        <div class="list-row">
+            <div class="list-main"><b>{slot["time"]}</b> <span class="muted">{slot["name"]}</span>
+                <span class="badge">출석함</span></div>
+            <form method="POST" action="/checkin/cancel/{record["id"]}">
+                <button class="small ghost">출석 취소</button>
+            </form>
+        </div>"""
+
+    parts.append(f"""
+<div class="card">
+    <h2>✅ 시간 선택해서 출석하기</h2>
+    <form method="POST" action="/checkin">
+        <select name="slot_id" aria-label="출석 타임"{select_disabled}>
+            {''.join(options)}
+        </select>
+        <button class="wide" style="margin-top:8px"{button_disabled}>출석하기</button>
+    </form>
+    <p class="small">{hint}</p>{('<div style="margin-top:12px">' + my_rows + "</div>") if my_rows else ""}
+</div>""")
 
     cards = []
     for slot in state["slots"]:
         people = by_slot.get(slot["id"], [])
-        my_record = mine_by_slot.get(slot["id"])
         action = ""
         if state["closed_all"]:
             action = '<span class="badge off">전체 휴강</span>'
         elif slot["blocked"]:
             action = '<span class="badge off">휴강</span>'
-        elif my_record:
-            action = (f'<form method="POST" action="/checkin/cancel/{my_record["id"]}">'
-                      '<button class="small ghost">출석 취소</button></form>')
         elif slot["full"]:
             action = '<span class="badge off">마감</span>'
-        else:
-            action = (f'<form method="POST" action="/checkin">'
-                      f'<input type="hidden" name="slot_id" value="{slot["id"]}">'
-                      '<button class="small">출석하기</button></form>')
         cards.append(f"""
 <section class="card">
     <div class="slot-head">
@@ -564,19 +614,18 @@ def render_index(user: dict, flash: str = "", error: bool = False) -> Response:
 </section>""")
     parts.append(f'<div class="slots">{"".join(cards)}</div>')
 
-    weekly = user["weekly"]
-    summary = " · ".join(
-        f"{store.WEEKDAY_KO[d]} {store.slot_info(weekly[d])['time'] if weekly[d] else '쉼'}"
-        for d in store.WEEKDAY_KEYS
-    )
     parts.append(f"""
 <div class="card">
-    <h2>🗓️ 내 자동 출석</h2>
-    <p class="notice-body" style="font-size:14px">{esc(summary)}</p>
-    <p class="small"><a href="/auto">자동 출석 설정 바꾸기 →</a></p>
+    <h2>🗓️ 자동 출석 · 지난 공지</h2>
+    <p class="small">자동 출석 설정과 지난 공지 목록은 각각 따로 있어요.</p>
+    <div class="form-row">
+        <a class="button small soft" href="/auto">자동 출석 설정</a>
+        <a class="button small soft" href="/notices">공지 목록</a>
+    </div>
 </div>""")
 
-    return Response(page("\n".join(parts), user=user, active="home", flash=flash, error=error))
+    return Response(page("\n".join(parts), title="출석하기 · On점핑 출석",
+                         user=user, active="checkin", flash=flash, error=error))
 
 
 # --------------------------------------------------------------------------- #
@@ -621,6 +670,10 @@ def render_notices(user: dict, flash: str = "", error: bool = False) -> Response
 # --------------------------------------------------------------------------- #
 
 def render_auto(user: dict, flash: str = "", error: bool = False) -> Response:
+    summary = " · ".join(
+        f"{store.WEEKDAY_KO[d]} {store.slot_info(user['weekly'][d])['time'] if user['weekly'][d] else '쉼'}"
+        for d in store.WEEKDAY_KEYS
+    )
     day_options = [("", "쉼")] + [(slot["id"], slot["time"]) for slot in store.SLOTS]
     columns = ""
     for key in store.WEEKDAY_KEYS:
@@ -644,6 +697,7 @@ def render_auto(user: dict, flash: str = "", error: bool = False) -> Response:
         <div class="week-grid">{columns}</div>
         <button class="wide" style="margin-top:14px">저장</button>
     </form>
+    <p class="small">내 설정: {esc(summary)}</p>
     <p class="small">주말은 설정하지 않습니다. 비워 두면 그 요일은 자동 출석을 하지 않아요.</p>
 </div>""",
         f"""
@@ -808,7 +862,23 @@ def render_admin_users(user: dict, flash: str = "", error: bool = False) -> Resp
     </div>"""
 
     parts = [
-        page_head("회원 관리", f"전체 {len(users)}명"),
+        page_head("회원", f"전체 {len(users)}명"),
+        """
+<div class="card">
+    <div class="slot-head">
+        <h2 style="margin:0">👥 회원 목록</h2>
+        <a class="button small" href="/admin/users/new">➕ 회원 추가하기</a>
+    </div>
+    <div style="margin-top:8px">%s</div>
+</div>""" % rows_html,
+    ]
+    return Response(page("\n".join(parts), title="회원 관리 · On점핑 출석", user=user,
+                         active="admin-users", flash=flash, error=error, wide=True))
+
+
+def render_admin_user_new(user: dict, flash: str = "", error: bool = False) -> Response:
+    parts = [
+        page_head("회원 추가", "새 회원 계정을 만듭니다. 만든 뒤 회원 목록에서 확인할 수 있어요."),
         """
 <div class="card">
     <h2>➕ 회원 만들기</h2>
@@ -819,14 +889,12 @@ def render_admin_users(user: dict, flash: str = "", error: bool = False) -> Resp
         <input name="nickname" placeholder="닉네임 (선택)" maxlength="20">
         <button class="wide" style="margin-top:8px">회원 생성</button>
     </form>
-</div>""",
-        f"""
-<div class="card">
-    <h2>👥 회원 목록</h2>{rows_html}
+    <p class="small">아이디는 로그인에 쓰는 값이라 나중에 바꿀 수 없습니다.</p>
+    <p class="small"><a href="/admin/users">← 회원 목록으로</a></p>
 </div>""",
     ]
-    return Response(page("\n".join(parts), title="회원 관리 · On점핑 출석", user=user,
-                         active="admin-users", flash=flash, error=error, wide=True))
+    return Response(page("\n".join(parts), title="회원 추가 · On점핑 출석", user=user,
+                         active="admin-users-new", flash=flash, error=error, wide=True))
 
 
 # --------------------------------------------------------------------------- #
@@ -865,10 +933,11 @@ def route(method: str, path: str, form: dict[str, list[str]], user: dict | None,
         return resp.clear_cookie(COOKIE)
 
     # ---- 회원 화면 ----
-    if path in ("/", "/index.html"):
-        if not user:
-            return redirect("/login")
-        return render_index(user, flash, flash_error)
+    if path in ("/", "/index.html", "/checkin"):
+        if method == "GET":
+            if not user:
+                return redirect("/login")
+            return render_index(user, flash, flash_error)
 
     if path == "/notices" and method == "GET":
         if not user:
@@ -971,6 +1040,10 @@ def route(method: str, path: str, form: dict[str, list[str]], user: dict | None,
             if not store.delete_notice(int(match.group(1))):
                 return redirect("/admin/notices", "삭제할 공지가 없습니다.", error=True)
             return redirect("/admin/notices", "공지를 삭제했어요.")
+
+        if path == "/admin/users/new":
+            if method == "GET":
+                return render_admin_user_new(user, flash, flash_error)
 
         if path == "/admin/users":
             if method == "POST":

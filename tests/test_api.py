@@ -174,16 +174,29 @@ class AppTest(unittest.TestCase):
     # ---------------- 화면 분리 ---------------- #
     def test_04_member_pages_are_split(self):
         _, _, home = self.member.get("/")
-        self.assertIn("오늘 출석", home)
+        self.assertIn("출석하기", home)
         for time_label in ("08:30", "09:30", "18:30", "19:40"):
             self.assertIn(time_label, home)
         self.assertIn("/ 11", home)
+        # 오늘의 공지가 맨 위에 붙고, 그 아래 시간 선택 출석 폼이 온다
+        self.assertIn("📢 오늘의 공지", home)
+        self.assertIn('name="slot_id"', home)
+        self.assertLess(home.index("📢 오늘의 공지"), home.index('name="slot_id"'))
+        self.assertIn("✅ 시간 선택해서 출석하기", home)
         self.assertNotIn("평일 자동 출석", home)      # /auto 로 분리
         self.assertNotIn("회원 만들기", home)          # /admin/users 로 분리
 
+        # 출석 전용 주소도 같은 화면을 보여 준다
+        status, _, checkin = self.member.get("/checkin")
+        self.assertEqual(status, 200)
+        self.assertIn("📢 오늘의 공지", checkin)
+        self.assertIn('name="slot_id"', checkin)
+        self.assertIn("18:30", checkin)
+        self.assertNotIn("평일 자동 출석", checkin)
+
         _, _, notices = self.member.get("/notices")
         self.assertIn("오늘의 공지", notices)
-        self.assertNotIn("출석하기", notices)
+        self.assertNotIn('name="slot_id"', notices)
 
         _, _, auto = self.member.get("/auto")
         self.assertIn("평일 자동 출석", auto)
@@ -191,7 +204,7 @@ class AppTest(unittest.TestCase):
         self.assertIn('name="fri"', auto)
         self.assertNotIn('name="sat"', auto)
         self.assertIn("내 정보", auto)
-        self.assertNotIn("출석하기", auto)
+        self.assertNotIn('name="slot_id"', auto)
 
         # 내비게이션 탭
         self.assertIn('href="/notices"', home)
@@ -210,9 +223,19 @@ class AppTest(unittest.TestCase):
         self.assertNotIn("휴강 제어", notices)
 
         _, _, users = self.admin.get("/admin/users")
-        self.assertIn("회원 만들기", users)
+        self.assertIn("회원 목록", users)
         self.assertIn("@minjae", users)
+        self.assertIn('href="/admin/users/new"', users)
+        self.assertNotIn('action="/admin/users"', users)   # 생성 폼은 전용 페이지로
         self.assertNotIn("휴강 제어", users)
+
+        status, _, new_user = self.admin.get("/admin/users/new")
+        self.assertEqual(status, 200)
+        self.assertIn("회원 만들기", new_user)
+        self.assertIn('action="/admin/users"', new_user)
+        self.assertNotIn("👥 회원 목록", new_user)
+        self.assertNotIn('name="body"', new_user)      # 공지 폼 없음
+        self.assertNotIn("휴강 제어", new_user)
 
         _, _, home = self.admin.get("/")
         for href in ('href="/admin"', 'href="/admin/notices"', 'href="/admin/users"'):
@@ -232,6 +255,7 @@ class AppTest(unittest.TestCase):
         self.assertIn("18:30 출석 완료!", html)
         self.assertIn("(나)", html)
         self.assertIn("출석 취소", html)
+        self.assertIn("(출석함)", html)
 
         self.member.post("/checkin", {"slot_id": "third"})
         _, _, html = self.member.get("/")
@@ -280,7 +304,7 @@ class AppTest(unittest.TestCase):
         self.assertEqual(status, 303)
         _, _, html = self.member.get("/")
         self.assertIn("🚫 오늘은 전체 휴강입니다.", html)
-        self.assertNotIn("출석하기", html)
+        self.assertNotIn('<button class="small">출석하기</button>', html)
 
         self.member.post("/checkin", {"slot_id": "third"})
         _, _, html = self.member.get("/")
@@ -317,6 +341,7 @@ class AppTest(unittest.TestCase):
         self.assertIn("오늘", html)
         _, _, home = self.member.get("/")
         self.assertIn("오늘 21시에 예약 글이 올라옵니다.", home)
+        self.assertIn("📢 오늘의 공지", home)
 
         # 같은 날 다시 등록하면 내용만 바뀐다 (중복 카드 없음)
         self.admin.post("/admin/notices", {"body": "수정된 공지"})
@@ -353,7 +378,7 @@ class AppTest(unittest.TestCase):
         friend = Client().login("friend", MEMBER_PASSWORD)
         self.assertEqual(friend.last_login_target, "/")
         _, _, html = friend.get("/")
-        self.assertIn("오늘 출석", html)
+        self.assertIn("출석하기", html)
 
         created = next(u for u in store.list_users() if u["username"] == "friend")
         self.admin.post(f"/admin/users/{created['id']}/delete")
@@ -381,8 +406,8 @@ class AppTest(unittest.TestCase):
         user = store.authenticate("minjae", MEMBER_PASSWORD)
         self.assertEqual(user["weekly"], {"mon": "first", "tue": "third", "wed": "fourth",
                                           "thu": None, "fri": None})
-        _, _, html = self.member.get("/")
-        self.assertIn("월 08:30 · 화 18:30 · 수 19:40 · 목 쉼 · 금 쉼", html)
+        _, _, auto = self.member.get("/auto")
+        self.assertIn("월 08:30 · 화 18:30 · 수 19:40 · 목 쉼 · 금 쉼", auto)
 
         # 빈 닉네임은 거부
         self.member.post("/profile", {"nickname": "   "})
