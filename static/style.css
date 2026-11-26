@@ -678,7 +678,7 @@ body.big-font .data-table th, body.big-font .data-table td { font-size: 16px; }
 .streak-fire { font-size: 26px; }
 .streak-num { font-size: 34px; letter-spacing: -0.02em; }
 .streak-text { font-size: 15px; color: var(--muted); }
-.calendar { margin: 22px 0 28px; }
+.calendar { margin: 22px 0 28px; max-width: 460px; }
 .cal-head {
   display: flex; justify-content: space-between; align-items: baseline;
   font-size: 14px; color: var(--ink-2); margin-bottom: 10px;
@@ -686,7 +686,7 @@ body.big-font .data-table th, body.big-font .data-table td { font-size: 16px; }
 .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
 .cal-labels { font-size: 11.5px; color: var(--muted); text-align: center; margin-bottom: 4px; }
 .cal-cell {
-  aspect-ratio: 1 / 1; display: flex; align-items: center; justify-content: center;
+  height: 44px; display: flex; align-items: center; justify-content: center;
   border: 1px solid transparent; border-radius: 3px;
   font-family: var(--font-mono); font-size: 13px; color: var(--ink-2);
 }
