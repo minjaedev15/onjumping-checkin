@@ -471,8 +471,10 @@ def page_head(title: str, subtitle: str = "") -> str:
 # --------------------------------------------------------------------------- #
 
 def render_login(flash: str = "", error: bool = False) -> Response:
-    content = """
+    flash_html = f'<div class="message{" error" if error else ""}">{esc(flash)}</div>' if flash else ""
+    content = f"""
 <div class="login-wrap">
+    {flash_html}
     <div class="card">
         <h1>로그인</h1>
         <p>온점핑 출석 관리</p>
@@ -487,12 +489,11 @@ def render_login(flash: str = "", error: bool = False) -> Response:
     </div>
 </div>
 """
-    flash_html = f'<div class="message{" error" if error else ""}">{esc(flash)}</div>' if flash else ""
     return Response(
         "<!DOCTYPE html>\n<html lang=\"ko\">\n<head>\n<meta charset=\"UTF-8\">\n"
         '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
         f"<title>로그인 · On점핑 출석</title>\n<style>{CSS}</style>\n</head>\n<body>\n"
-        f"{header(None, None)}\n<main class=\"container\">{flash_html}{content}</main>\n"
+        f"{header(None, None)}\n<main class=\"container\">{content}</main>\n"
         "</body>\n</html>\n"
     )
 
