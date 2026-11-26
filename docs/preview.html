@@ -613,13 +613,20 @@ body.big-font .data-table th, body.big-font .data-table td { font-size: 16px; }
 
 /* 자동 출석 */
 .autocheck {
+  display: grid;
+  grid-template-columns: minmax(0, 300px) minmax(0, 1fr);
+  column-gap: 40px;
+  align-items: start;
   border: 1px solid var(--hair);
   border-left: 2px solid var(--accent);
   padding: 18px 20px;
   margin-top: 18px;
   background: #FBFAF7;
 }
-.autocheck-next { margin: 8px 0 12px; font-size: 13.5px; color: var(--muted); }
+.autocheck-next { margin: 8px 0 4px; font-size: 13.5px; color: var(--muted); }
+.autocheck .big-toggle { grid-column: 1; }
+.autocheck-next { grid-column: 1; }
+#member-weekly { grid-column: 2; grid-row: 1 / span 3; }
 .weekly { display: grid; gap: 6px; }
 .weekly-row { display: flex; align-items: center; gap: 10px; }
 .weekly-row .w-day {
@@ -774,7 +781,8 @@ body.big-font .data-table th, body.big-font .data-table td { font-size: 16px; }
 @media (max-width: 860px) {
   body { font-size: 17px; }
   .cards { grid-template-columns: 1fr; }
-  #member-weekly { grid-template-columns: 1fr; }
+  .autocheck { grid-template-columns: 1fr; }
+  #member-weekly { grid-column: 1; grid-row: auto; margin-top: 12px; max-width: none; }
   .prefs-grid { grid-template-columns: 1fr; }
   .toast-wrap { left: 16px; right: 16px; bottom: 16px; align-items: stretch; }
   .toast { max-width: none; }
