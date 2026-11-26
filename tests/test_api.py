@@ -1,284 +1,343 @@
-"""API 스모크 테스트.
+"""화면·동작 테스트 (HTTP 서버 없이 WSGI 앱을 직접 호출).
 
-    python -m unittest tests.test_api -v
+    python -m unittest discover tests -v
 
-임시 SQLite 파일을 쓰고, server.Handler 를 임의 포트에 띄워 실제 HTTP 로 확인한다.
+임시 SQLite 파일을 쓰고, 로그인 → 폼 전송 → 리다이렉트 → 화면 확인 순서로
+실제 사용 흐름을 따라간다.
 """
 
 from __future__ import annotations
 
-import http.client
-import json
+import io
 import os
 import sys
 import tempfile
-import threading
 import unittest
-from datetime import date
-from http.server import ThreadingHTTPServer
+import urllib.parse
+from http.cookies import SimpleCookie
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-TMP = tempfile.mkdtemp(prefix="onjumping-test-")
-os.environ["ONJUMPING_DATA_DIR"] = TMP
+os.environ["ONJUMPING_DATA_DIR"] = tempfile.mkdtemp(prefix="onjumping-test-")
 
-import server  # noqa: E402
 import store  # noqa: E402
+import webapp  # noqa: E402
 
 
-class ApiTest(unittest.TestCase):
+class Client:
+    """쿠키를 들고 다니는 최소 WSGI 클라이언트."""
+
+    def __init__(self):
+        self.cookies: dict[str, str] = {}
+
+    def request(self, method: str, path: str, form: dict | None = None):
+        body = urllib.parse.urlencode(form, doseq=True).encode("utf-8") if form else b""
+        environ = {
+            "REQUEST_METHOD": method.upper(),
+            "PATH_INFO": path.split("?")[0],
+            "QUERY_STRING": path.split("?", 1)[1] if "?" in path else "",
+            "CONTENT_TYPE": "application/x-www-form-urlencoded",
+            "CONTENT_LENGTH": str(len(body)),
+            "wsgi.input": io.BytesIO(body),
+            "HTTP_COOKIE": "; ".join(f"{k}={v}" for k, v in self.cookies.items()),
+        }
+        captured: dict = {}
+
+        def start_response(status, headers):
+            captured["status"] = int(status.split(" ")[0])
+            captured["headers"] = headers
+
+        raw = b"".join(webapp.app(environ, start_response))
+        for name, value in captured["headers"]:
+            if name.lower() != "set-cookie":
+                continue
+            for key, morsel in SimpleCookie(value).items():
+                if morsel["max-age"] == "0" or morsel.value == "":
+                    self.cookies.pop(key, None)
+                else:
+                    self.cookies[key] = morsel.value
+        return captured["status"], dict(captured["headers"]), raw.decode("utf-8")
+
+    def get(self, path):
+        return self.request("GET", path)
+
+    def post(self, path, form=None):
+        return self.request("POST", path, form or {})
+
+    def login(self, username: str, password: str):
+        status, headers, _ = self.post("/login", {"username": username, "password": password})
+        assert status == 303 and headers.get("Location") == "/", (status, headers)
+        return self
+
+
+class AppTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         store.init_db()
-        cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
-        cls.port = cls.httpd.server_address[1]
-        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
-        cls.thread.start()
 
-    @classmethod
-    def tearDownClass(cls):
-        cls.httpd.shutdown()
-        cls.httpd.server_close()
+    def setUp(self):
+        self.admin = Client().login("admin", "admin1234")
+        self.member = Client().login("minjae", "1234")
 
-    # ---------------- helpers ----------------
-    def request(self, method, path, body=None, cookie=None):
-        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
-        headers = {"Content-Type": "application/json"}
-        if cookie:
-            headers["Cookie"] = cookie
-        payload = json.dumps(body) if body is not None else None
-        conn.request(method, path, body=payload, headers=headers)
-        res = conn.getresponse()
-        raw = res.read()
-        data = json.loads(raw) if raw else {}
-        set_cookie = res.getheader("Set-Cookie") or ""
-        conn.close()
-        return res.status, data, set_cookie.split(";")[0]
+    def cleanup_day(self):
+        """테스트가 남긴 오늘 상태를 초기화한다."""
+        store.set_day(store.kst_today(), closed_all=False, blocked=[])
 
-    def login(self, user_id):
-        status, data, cookie = self.request("POST", "/api/session", {"user_id": user_id})
-        self.assertEqual(status, 200, data)
-        return cookie
+    def tearDown(self):
+        self.cleanup_day()
 
-    # ---------------- tests ----------------
-    def test_01_accounts_and_static(self):
-        status, data, _ = self.request("GET", "/api/accounts")
+    # ---------------- 로그인 / 접근 ---------------- #
+    def test_01_login_flow(self):
+        guest = Client()
+        status, headers, _ = guest.get("/")
+        self.assertEqual(status, 303)
+        self.assertEqual(headers["Location"], "/login")
+
+        status, _, html = guest.get("/login")
         self.assertEqual(status, 200)
-        self.assertEqual(len(data["accounts"]), 3)
-        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
-        conn.request("GET", "/")
-        res = conn.getresponse()
-        html = res.read().decode("utf-8")
-        conn.close()
-        self.assertEqual(res.status, 200)
-        self.assertIn("출석 예약기", html)
+        self.assertIn("로그인", html)
+        self.assertIn("minjae", html)
 
-    def test_02_slots_are_the_four_band_times(self):
-        status, data, _ = self.request("GET", "/api/slots")
+        status, _, html = guest.post("/login", {"username": "admin", "password": "nope"})
         self.assertEqual(status, 200)
-        times = [(s["name"], s["time"], s["capacity"]) for s in data["slots"]]
-        self.assertEqual(times, [
-            ("첫째타임", "08:30", 11),
-            ("둘째타임", "09:30", 11),
-            ("셋째타임", "18:30", 11),
-            ("넷째타임", "19:40", 11),
-        ])
+        self.assertIn("아이디 또는 비밀번호가 틀렸습니다.", html)
+        self.assertEqual(guest.cookies, {})
 
-    def test_03_admin_bootstrap_has_management_data(self):
-        cookie = self.login(1)
-        status, data, _ = self.request("GET", "/api/bootstrap", cookie=cookie)
+        status, headers, _ = guest.post("/login", {"username": "admin", "password": "admin1234"})
+        self.assertEqual(status, 303)
+        self.assertEqual(headers["Location"], "/")
+        self.assertIn("onjumping_uid", guest.cookies)
+
+        status, _, html = guest.get("/")
         self.assertEqual(status, 200)
-        self.assertEqual(data["session"]["role"], "admin")
-        self.assertGreaterEqual(len(data["users"]), 3)
-        self.assertGreaterEqual(len(data["notices"]), 1)
-        self.assertEqual(len(data["day"]["slots"]), 4)
-        self.assertEqual(data["status"]["slot_id"], "third")
+        self.assertIn("안녕하세요, 관리자님", html)
+        self.assertIn('href="/admin"', html)
+        self.assertIn("반가워요", html)
 
-    def test_04_admin_user_crud(self):
-        cookie = self.login(1)
-        status, data, _ = self.request("POST", "/api/users", {
-            "name": "테스트유저", "target_slot": "fourth", "days": ["mon", "wed"],
-        }, cookie=cookie)
-        self.assertEqual(status, 201, data)
-        uid = data["user"]["id"]
-        self.assertEqual(data["user"]["target_slot_label"], "넷째타임 : 저녁 7시40분")
+        status, headers, _ = guest.get("/logout")
+        self.assertEqual(status, 303)
+        self.assertEqual(headers["Location"], "/login")
+        status, headers, _ = guest.get("/")
+        self.assertEqual(status, 303)
 
-        status, data, _ = self.request("PATCH", f"/api/users/{uid}", {"target_slot": "first"}, cookie=cookie)
-        self.assertEqual(status, 200, data)
-        self.assertEqual(data["user"]["target_slot"], "first")
+    def test_02_forged_cookie_is_rejected(self):
+        guest = Client()
+        guest.cookies["onjumping_uid"] = "1.deadbeefdeadbeefdeadbeefdeadbeef"
+        status, headers, _ = guest.get("/")
+        self.assertEqual(status, 303)
+        self.assertEqual(headers["Location"], "/login")
 
-        status, data, _ = self.request("DELETE", f"/api/users/{uid}", cookie=cookie)
+    def test_03_member_cannot_reach_admin(self):
+        status, headers, _ = self.member.get("/admin")
+        self.assertEqual(status, 303)
+        self.assertEqual(headers["Location"], "/")
+        _, _, html = self.member.get("/")
+        self.assertIn("관리자만 접근할 수 있어요.", html)
+        self.assertNotIn('href="/admin"', html)
+
+        status, _, _ = self.member.post("/admin/users", {"username": "sneak", "password": "1234"})
+        self.assertEqual(status, 303)
+        self.assertTrue(all(u["username"] != "sneak" for u in store.list_users()))
+
+    # ---------------- 메인 화면 ---------------- #
+    def test_04_main_layout(self):
+        status, _, html = self.member.get("/")
         self.assertEqual(status, 200)
-        self.assertTrue(data["deleted"])
-        self.assertIsNone(store.get_user(uid))
+        self.assertIn("안녕하세요, 민재님", html)
+        self.assertIn("년", html)
+        self.assertIn("08:30", html)
+        self.assertIn("09:30", html)
+        self.assertIn("18:30", html)
+        self.assertIn("19:40", html)
+        self.assertIn("/ 11명", html)
+        self.assertIn("📢 오늘의 공지", html)
+        self.assertIn("✅ 출석 체크", html)
+        self.assertIn("🗓️ 평일 자동 출석", html)
+        self.assertIn('name="mon"', html)
+        self.assertIn('name="fri"', html)
+        self.assertNotIn('name="sat"', html)
+        self.assertNotIn("대기", html)  # 대기열 기능은 제거됨
 
-        status, _, _ = self.request("DELETE", "/api/users/1", cookie=cookie)
-        self.assertEqual(status, 400)  # 관리자는 삭제 불가
+    # ---------------- 출석 ---------------- #
+    def test_05_checkin_and_cancel(self):
+        day = store.kst_today()
+        before = store.get_day(day)["slots"][2]["taken"]
 
-    def test_05_notice_crud(self):
-        cookie = self.login(1)
-        status, data, _ = self.request("POST", "/api/notices", {
-            "title": "테스트 공지", "body": "본문", "posted_on": date.today().isoformat(),
-        }, cookie=cookie)
-        self.assertEqual(status, 201, data)
-        nid = data["notice"]["id"]
-        self.assertEqual(data["notice"]["author"], "황보민재")
+        status, headers, _ = self.member.post("/checkin", {"slot_id": "third"})
+        self.assertEqual(status, 303)
+        self.assertEqual(headers["Location"], "/")
+        self.assertEqual(store.get_day(day)["slots"][2]["taken"], before + 1)
 
-        status, data, _ = self.request("PATCH", f"/api/notices/{nid}", {"title": "수정 공지"}, cookie=cookie)
+        _, _, html = self.member.get("/")
+        self.assertIn("18:30 출석 완료!", html)
+        self.assertIn("(출석함)", html)
+
+        # 같은 타임 중복
+        self.member.post("/checkin", {"slot_id": "third"})
+        _, _, html = self.member.get("/")
+        self.assertIn("이미 18:30 타임에 출석했어요.", html)
+
+        rows = [r for r in store.list_attendance(day) if r["username"] == "minjae"]
+        self.assertEqual(len(rows), 1)
+        status, _, html = self.member.post(f"/checkin/cancel/{rows[0]['id']}")
+        self.assertEqual(status, 303)
+        _, _, html = self.member.get("/")
+        self.assertIn("출석을 취소했어요.", html)
+        self.assertEqual(store.get_day(day)["slots"][2]["taken"], before)
+
+    def test_06_cannot_cancel_someone_else(self):
+        day = store.kst_today()
+        self.member.post("/checkin", {"slot_id": "first"})
+        record = next(r for r in store.list_attendance(day) if r["username"] == "minjae")
+
+        other = Client().login("doyun", "1234")
+        other.post(f"/checkin/cancel/{record['id']}")
+        _, _, html = other.get("/")
+        self.assertIn("본인 출석만 취소할 수 있어요.", html)
+        self.assertEqual(len(store.list_attendance(day)), 1)
+
+        self.admin.post(f"/checkin/cancel/{record['id']}")
+        self.assertEqual(store.list_attendance(day), [])
+
+    def test_07_full_slot_is_blocked(self):
+        day = store.kst_today()
+        made = [store.create_user(f"full{i}", "1234", f"가득{i}") for i in range(11)]
+        try:
+            for user in made:
+                store.check_in(user["id"], day, "fourth")
+            _, _, html = self.member.get("/")
+            self.assertIn("(마감)", html)
+            self.member.post("/checkin", {"slot_id": "fourth"})
+            _, _, html = self.member.get("/")
+            self.assertIn("19:40 타임은 정원이 다 찼어요", html)
+        finally:
+            for user in made:
+                store.delete_user(user["id"])
+
+    # ---------------- 휴강 / 타임 차단 ---------------- #
+    def test_08_holiday_blocks_checkin(self):
+        status, _, _ = self.admin.post("/admin/day", {"closed_all": "1"})
+        self.assertEqual(status, 303)
+        _, _, html = self.member.get("/")
+        self.assertIn("🚫 오늘은 전체 휴강입니다.", html)
+        self.assertIn("출석할 수 없습니다", html)
+
+        self.member.post("/checkin", {"slot_id": "third"})
+        _, _, html = self.member.get("/")
+        self.assertIn("전체 휴강이라 출석할 수 없어요.", html)
+        self.assertEqual(store.list_attendance(store.kst_today()), [])
+
+        self.admin.post("/admin/day", {})
+        _, _, html = self.member.get("/")
+        self.assertNotIn("🚫 오늘은 전체 휴강입니다.", html)
+
+    def test_09_slot_block_only_blocks_that_time(self):
+        status, _, _ = self.admin.post("/admin/day", {"blocked": ["first", "second"]})
+        self.assertEqual(status, 303)
+        state = store.get_day(store.kst_today())
+        self.assertEqual(sorted(state["blocked"]), ["first", "second"])
+
+        _, _, html = self.member.get("/")
+        self.assertIn("(휴강)", html)
+
+        self.member.post("/checkin", {"slot_id": "first"})
+        _, _, html = self.member.get("/")
+        self.assertIn("08:30 타임은 오늘 휴강이에요.", html)
+
+        status, _, _ = self.member.post("/checkin", {"slot_id": "third"})
+        self.assertEqual(status, 303)
+        self.assertEqual(store.get_day(store.kst_today())["slots"][2]["taken"], 1)
+
+    # ---------------- 공지 ---------------- #
+    def test_10_notice_register_and_delete(self):
+        status, _, _ = self.admin.post("/admin/notice", {"body": "오늘 21시에 예약 글이 올라옵니다."})
+        self.assertEqual(status, 303)
+        _, _, html = self.member.get("/")
+        self.assertIn("오늘 21시에 예약 글이 올라옵니다.", html)
+
+        _, _, admin_html = self.admin.get("/admin")
+        self.assertIn("오늘 21시에 예약 글이 올라옵니다.", admin_html)
+
+        # 같은 날 다시 등록하면 내용만 바뀐다 (중복 카드 없음)
+        self.admin.post("/admin/notice", {"body": "수정된 공지"})
+        _, _, html = self.member.get("/")
+        self.assertEqual(html.count("📢 오늘의 공지"), 1)
+        self.assertIn("수정된 공지", html)
+
+        self.admin.post("/admin/notice/delete")
+        _, _, html = self.member.get("/")
+        self.assertNotIn("📢 오늘의 공지", html)
+
+        self.admin.post("/admin/notice", {"body": ""})
+        _, _, admin_html = self.admin.get("/admin")
+        self.assertIn("공지 내용을 입력해 주세요.", admin_html)
+
+    # ---------------- 회원 관리 ---------------- #
+    def test_11_admin_user_crud(self):
+        status, _, _ = self.admin.post("/admin/users", {
+            "username": "friend", "password": "1234", "nickname": "친구",
+        })
+        self.assertEqual(status, 303)
+        _, _, admin_html = self.admin.get("/admin")
+        self.assertIn("친구", admin_html)
+        self.assertIn("@friend", admin_html)
+        self.assertIn("👑 관리자", admin_html)
+
+        friend = Client().login("friend", "1234")
+        _, _, html = friend.get("/")
+        self.assertIn("안녕하세요, 친구님", html)
+
+        created = next(u for u in store.list_users() if u["username"] == "friend")
+        self.admin.post(f"/admin/users/{created['id']}/delete")
+        self.assertTrue(all(u["username"] != "friend" for u in store.list_users()))
+
+        # 관리자 계정은 삭제되지 않는다
+        admin_user = next(u for u in store.list_users() if u["username"] == "admin")
+        self.admin.post(f"/admin/users/{admin_user['id']}/delete")
+        self.assertTrue(store.get_user(admin_user["id"])["is_admin"])
+
+        # 중복 아이디 / 짧은 비밀번호는 거부
+        self.admin.post("/admin/users", {"username": "minjae", "password": "1234"})
+        self.admin.post("/admin/users", {"username": "shorty", "password": "12"})
+        self.assertTrue(all(u["username"] != "shorty" for u in store.list_users()))
+
+    # ---------------- 내 설정 ---------------- #
+    def test_12_nickname_and_weekly(self):
+        status, _, _ = self.member.post("/profile", {"nickname": "민재짱"})
+        self.assertEqual(status, 303)
+        _, _, html = self.member.get("/")
+        self.assertIn("안녕하세요, 민재짱님", html)
+
+        self.member.post("/weekly", {"mon": "first", "tue": "third", "wed": "fourth", "thu": "", "fri": ""})
+        user = store.authenticate("minjae", "1234")
+        self.assertEqual(user["weekly"], {"mon": "first", "tue": "third", "wed": "fourth",
+                                          "thu": None, "fri": None})
+        _, _, html = self.member.get("/")
+        self.assertIn("내 설정: 월 08:30 · 화 18:30 · 수 19:40 · 목 쉼 · 금 쉼", html)
+
+        # 빈 닉네임은 거부
+        self.member.post("/profile", {"nickname": "   "})
+        _, _, html = self.member.get("/")
+        self.assertIn("닉네임을 입력해 주세요.", html)
+        self.assertIn("안녕하세요, 민재짱님", html)
+
+    # ---------------- 기타 ---------------- #
+    def test_13_health_and_404(self):
+        status, _, body = self.member.get("/health")
         self.assertEqual(status, 200)
-        self.assertEqual(data["notice"]["title"], "수정 공지")
+        self.assertEqual(body, "OK")
+        status, _, html = self.member.get("/nope")
+        self.assertEqual(status, 404)
+        self.assertIn("페이지를 찾을 수 없습니다", html)
 
-        status, data, _ = self.request("GET", "/api/bootstrap", cookie=cookie)
-        self.assertEqual(status, 200)
-        self.assertEqual(data["notice"]["title"], "수정 공지")
-
-        status, _, _ = self.request("DELETE", f"/api/notices/{nid}", cookie=cookie)
-        self.assertEqual(status, 200)
-        self.assertFalse(store.delete_notice(nid))
-
-    def test_06_holiday_blocks_every_slot(self):
-        admin = self.login(1)
-        member = self.login(2)
-        today = date.today().isoformat()
-
-        status, data, _ = self.request("POST", "/api/day", {"date": today, "closed_all": True}, cookie=admin)
-        self.assertEqual(status, 200)
-        self.assertTrue(data["day"]["closed_all"])
-        self.assertTrue(all(not s["open"] for s in data["day"]["slots"]))
-
-        status, data, _ = self.request("POST", "/api/checkin", {"date": today, "slot_id": "third"}, cookie=member)
-        self.assertEqual(status, 409)
-        self.assertEqual(data["code"], "closed")
-
-        self.request("POST", "/api/day", {"date": today, "closed_all": False}, cookie=admin)
-        status, data, _ = self.request("GET", "/api/day?date=" + today, cookie=admin)
-        self.assertEqual(status, 200)
-        self.assertFalse(data["day"]["closed_all"])
-
-    def test_07_partial_slot_block_and_checkin(self):
-        admin = self.login(1)
-        member = self.login(2)
-        today = date.today().isoformat()
-
-        for slot in ("first", "second"):
-            status, data, _ = self.request("POST", "/api/day/slot", {
-                "date": today, "slot_id": slot, "blocked": True,
-            }, cookie=admin)
-            self.assertEqual(status, 200, data)
-        self.assertEqual(sorted(data["day"]["blocked"]), ["first", "second"])
-        open_slots = [s["id"] for s in data["day"]["slots"] if s["open"]]
-        self.assertEqual(open_slots, ["third", "fourth"])
-
-        status, data, _ = self.request("POST", "/api/checkin", {"date": today, "slot_id": "first"}, cookie=member)
-        self.assertEqual(status, 409)
-        self.assertEqual(data["code"], "blocked")
-
-        status, data, _ = self.request("POST", "/api/checkin", {"date": today, "slot_id": "third"}, cookie=member)
-        self.assertEqual(status, 201, data)
-        self.assertEqual(data["checkin"]["slot_id"], "third")
-        self.assertEqual(data["day"]["slots"][2]["taken"], 1)
-
-        status, data, _ = self.request("POST", "/api/checkin", {"date": today, "slot_id": "third"}, cookie=member)
-        self.assertEqual(status, 409)
-        self.assertEqual(data["code"], "duplicate")
-
-        status, data, _ = self.request("POST", "/api/day/slot", {
-            "date": today, "slot_id": "first", "blocked": False,
-        }, cookie=admin)
-        self.assertEqual(status, 200)
-        self.assertNotIn("first", data["day"]["blocked"])
-
-    def test_08_member_cannot_use_admin_apis(self):
-        member = self.login(2)
-        today = date.today().isoformat()
-        status, _, _ = self.request("POST", "/api/users", {"name": "몰래"}, cookie=member)
-        self.assertEqual(status, 403)
-        status, _, _ = self.request("POST", "/api/notices", {"title": "몰래"}, cookie=member)
-        self.assertEqual(status, 403)
-        status, _, _ = self.request("POST", "/api/day", {"date": today, "closed_all": True}, cookie=member)
-        self.assertEqual(status, 403)
-        status, _, _ = self.request("GET", "/api/config", cookie=member)
-        self.assertEqual(status, 403)
-        status, data, _ = self.request("GET", "/api/bootstrap", cookie=member)
-        self.assertEqual(status, 200)
-        self.assertNotIn("notices", data)
-        self.assertEqual(len(data["users"]), 1)
-
-    def test_09_login_required(self):
-        status, _, _ = self.request("GET", "/api/bootstrap")
-        self.assertEqual(status, 200)  # 로그인 화면용 최소 응답
-        status, _, _ = self.request("GET", "/api/users")
-        self.assertEqual(status, 401)
-
-    def test_11_nickname_and_weekly(self):
-        member = self.login(2)
-        status, data, _ = self.request("POST", "/api/profile", {"nickname": "도윤이"}, cookie=member)
-        self.assertEqual(status, 200, data)
-        self.assertEqual(data["session"]["nickname"], "도윤이")
-        weekly = {"mon": "third", "tue": "third", "wed": "fourth",
-                  "thu": None, "fri": None}
-        status, data, _ = self.request("POST", "/api/profile", {"weekly": weekly}, cookie=member)
-        self.assertEqual(status, 200, data)
-        self.assertEqual(data["session"]["weekly"]["wed"], "fourth")
-        self.assertIsNone(data["session"]["weekly"]["fri"])
-
-        admin = self.login(1)
-        status, data, _ = self.request("GET", "/api/status", cookie=admin)
-        self.assertIsNotNone(data["next_run_at"])
-        self.assertEqual(len(data["weekly_slots"]), 4)
-
-    def test_12_waitlist_and_shake(self):
-        admin = self.login(1)
-        day = date.today().isoformat()
-        for slot in ("first", "second", "third", "fourth"):
-            self.request("POST", "/api/day/slot", {"date": day, "slot_id": slot, "blocked": False}, cookie=admin)
-        member = self.login(3)
-        # 자리가 남아 있으면 대기 불가
-        status, data, _ = self.request("POST", "/api/waitlist", {"date": day, "slot_id": "second"}, cookie=member)
-        self.assertEqual(status, 409)
-        self.assertEqual(data["code"], "open")
-
-        # 만석으로 만든 뒤 대기 신청
-        for i in range(11):
-            store.add_checkin(1, day, "second", status="voted", taken=i + 1, capacity=11)
-        status, data, _ = self.request("POST", "/api/waitlist", {"date": day, "slot_id": "second"}, cookie=member)
-        self.assertEqual(status, 201, data)
-        self.assertGreaterEqual(data["day"]["slots"][1]["waiting"], 1)
-        status, data, _ = self.request("DELETE", "/api/waitlist", {"date": day, "slot_id": "second"}, cookie=member)
-        self.assertEqual(status, 200)
-        self.assertTrue(data["left"])
-
-        status, data, _ = self.request("POST", "/api/shake", {"date": day, "flavor": "쿠키"}, cookie=member)
-        self.assertEqual(status, 200, data)
-        self.assertEqual(data["shake"]["flavor"], "쿠키")
-        status, data, _ = self.request("POST", "/api/shake", {"date": day, "flavor": "없는맛"}, cookie=member)
-        self.assertEqual(status, 400)
-
-    def test_13_checkin_cancel(self):
-        member = self.login(3)
-        day = date.today().isoformat()
-        slot = "fourth" if not store.get_day(day)["slots"][3]["full"] else "third"
-        status, _, _ = self.request("POST", "/api/checkin", {"date": day, "slot_id": slot}, cookie=member)
-        self.assertEqual(status, 201)
-        status, data, _ = self.request("POST", "/api/checkin/cancel", {"date": day, "slot_id": slot}, cookie=member)
-        self.assertEqual(status, 200)
-        self.assertTrue(data["cancelled"])
-
-    def test_10_capacity_full(self):
-        admin = self.login(1)
-        day = date.today().isoformat()
-        slot = "fourth"
-        for i in range(11):
-            store.add_checkin(1, day, slot, status="voted", taken=i + 1, capacity=11)
-        status, data, _ = self.request("GET", "/api/day?date=" + day, cookie=admin)
-        fourth = next(s for s in data["day"]["slots"] if s["id"] == slot)
-        self.assertTrue(fourth["full"])
-        member = self.login(3)
-        status, data, _ = self.request("POST", "/api/checkin", {"date": day, "slot_id": slot}, cookie=member)
-        self.assertEqual(status, 409)
-        self.assertEqual(data["code"], "full")
+    def test_14_passwords_are_hashed(self):
+        with store.connect() as conn:
+            rows = conn.execute("SELECT username, password_hash FROM users").fetchall()
+        for row in rows:
+            self.assertTrue(row["password_hash"].startswith("pbkdf2:sha256:"), row["username"])
+            self.assertNotIn("admin1234", row["password_hash"])
 
 
 if __name__ == "__main__":

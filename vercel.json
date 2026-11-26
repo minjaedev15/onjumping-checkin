@@ -5,7 +5,11 @@
       "src": "api/index.py",
       "use": "@vercel/python",
       "config": {
-        "includeFiles": ["static/**", "config.json"]
+        "includeFiles": [
+          "store.py",
+          "webapp.py",
+          "config.json"
+        ]
       }
     }
   ],

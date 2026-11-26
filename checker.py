@@ -211,7 +211,13 @@ def run_check(cfg: dict, dry_run: bool, debug_dump: bool) -> dict:
     KEY = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
     target = date.today() + timedelta(days=int(cfg.get("days_ahead", 1)))
     schedule = cfg.get("schedule") or {}
+    store.init_db()
+    # 대시보드의 "평일 자동 출석" 카드가 진짜 설정이다. 그 사용자 설정이 있으면
+    # config.json 의 옛 weekly 보다 우선한다.
     weekly = schedule.get("weekly") if isinstance(schedule.get("weekly"), dict) else None
+    actor = store.get_user(int(cfg.get("user_id") or 1))
+    if actor and actor["weekly"]:
+        weekly = actor["weekly"]
     if weekly is not None:
         slot_id = weekly.get(KEY[target.weekday()])
         if not slot_id:
