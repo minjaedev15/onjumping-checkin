@@ -958,7 +958,7 @@ body.big-font .data-table th, body.big-font .data-table td { font-size: 16px; }
               <div class="field-row">
                 <label>
                   <span class="field-label">확인 시각 (전날 밤)</span>
-                  <input type="time" name="at" id="set-time" class="mono" />
+                  <input type="text" name="at" id="set-time" class="mono" inputmode="numeric" maxlength="5" placeholder="21:01" />
                 </label>
                 <label>
                   <span class="field-label">정원</span>
@@ -1446,7 +1446,7 @@ function renderSlots() {
       <td class="num mono">${slot.taken}<span class="muted">/${slot.capacity}</span>
         <div class="meter slim"><span style="width:${pct}%"></span></div></td>
       <td><span class="state st-${view.key}">${esc(view.label)}</span>
-        ${slot.waiting ? `<span class="wait-tag">대기 ${slot.waiting}</span>` : ""}</td>
+        ${slot.waiting ? `<span class="wait-tag">· 대기 ${slot.waiting}</span>` : ""}</td>
       <td class="actions">
         <button class="btn btn-sm" type="button" data-block-slot="${slot.id}" data-blocked="${slot.blocked ? "1" : "0"}">
           ${slot.blocked ? "차단 해제" : "타임 차단"}</button>
@@ -1902,9 +1902,15 @@ function bind() {
       return;
     }
     try {
+      const at = $("#set-time").value.trim();
+      if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(at)) {
+        msg.textContent = "시각은 21:01 형식으로 입력하세요.";
+        msg.className = "form-msg err";
+        return;
+      }
       await api("/api/config", {
         method: "POST",
-        body: JSON.stringify({ schedule: { at: $("#set-time").value, weekly } }),
+        body: JSON.stringify({ schedule: { at, weekly } }),
       });
       msg.textContent = "저장했습니다.";
       msg.className = "form-msg ok";

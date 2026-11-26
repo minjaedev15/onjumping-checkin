@@ -301,7 +301,7 @@ function renderSlots() {
       <td class="num mono">${slot.taken}<span class="muted">/${slot.capacity}</span>
         <div class="meter slim"><span style="width:${pct}%"></span></div></td>
       <td><span class="state st-${view.key}">${esc(view.label)}</span>
-        ${slot.waiting ? `<span class="wait-tag">대기 ${slot.waiting}</span>` : ""}</td>
+        ${slot.waiting ? `<span class="wait-tag">· 대기 ${slot.waiting}</span>` : ""}</td>
       <td class="actions">
         <button class="btn btn-sm" type="button" data-block-slot="${slot.id}" data-blocked="${slot.blocked ? "1" : "0"}">
           ${slot.blocked ? "차단 해제" : "타임 차단"}</button>
@@ -757,9 +757,15 @@ function bind() {
       return;
     }
     try {
+      const at = $("#set-time").value.trim();
+      if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(at)) {
+        msg.textContent = "시각은 21:01 형식으로 입력하세요.";
+        msg.className = "form-msg err";
+        return;
+      }
       await api("/api/config", {
         method: "POST",
-        body: JSON.stringify({ schedule: { at: $("#set-time").value, weekly } }),
+        body: JSON.stringify({ schedule: { at, weekly } }),
       });
       msg.textContent = "저장했습니다.";
       msg.className = "form-msg ok";
