@@ -89,6 +89,8 @@ class Handler(BaseHTTPRequestHandler):
         path = parsed.path
         if method == "GET" and path in ("/", "/index.html"):
             return self.send_file(STATIC_DIR / "index.html")
+        if method == "GET" and path in ("/style.css", "/app.js"):
+            return self.send_file(STATIC_DIR / path.lstrip("/"))
         if method == "GET" and path.startswith("/static/"):
             return self.send_file(STATIC_DIR / path[len("/static/"):])
         if not path.startswith("/api/"):

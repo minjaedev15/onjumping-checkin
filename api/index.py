@@ -71,6 +71,8 @@ def app(environ, start_response):
 
     if method == "GET" and path in ("/", "/index.html"):
         return _file_response(start_response, STATIC_DIR / "index.html")
+    if method == "GET" and path in ("/style.css", "/app.js"):
+        return _file_response(start_response, STATIC_DIR / path.lstrip("/"))
     if method == "GET" and path.startswith("/static/"):
         return _file_response(start_response, STATIC_DIR / path[len("/static/"):])
     if not path.startswith("/api/"):
