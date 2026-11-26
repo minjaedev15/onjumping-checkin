@@ -708,15 +708,15 @@ body.big-font .data-table th, body.big-font .data-table td { font-size: 16px; }
 
 /* 설정 */
 .prefs-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(190px, 260px);
-  gap: 28px;
-  align-items: end;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 18px 32px;
   padding-top: 16px;
 }
 .prefs-form { min-width: 0; }
 .prefs-form label { min-width: 0; }
-.prefs-toggles { justify-self: end; }
+.prefs-toggles { display: flex; align-items: center; gap: 26px; flex-wrap: wrap; }
 .prefs-form { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; }
 .prefs-form label { flex: 1; min-width: 180px; }
 .prefs-toggles { display: flex; flex-direction: column; gap: 14px; }
