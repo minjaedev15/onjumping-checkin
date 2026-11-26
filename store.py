@@ -95,6 +95,11 @@ class CheckinError(Exception):
         self.message = message
 
 
+def _clean_text(text: str) -> str:
+    """폼/textarea 에서 올 수 있는 CRLF 를 LF 로 맞춘다."""
+    return (text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+
+
 def _now() -> str:
     return datetime.now(KST).isoformat(timespec="seconds")
 
@@ -642,7 +647,7 @@ def get_notice(notice_id: int) -> dict | None:
 def set_notice(body: str, author: str, posted_on: str | None = None) -> dict:
     """오늘 공지를 등록한다. 같은 날짜 공지가 이미 있으면 내용만 바꾼다."""
     posted_on = posted_on or kst_today()
-    body = body.strip()
+    body = _clean_text(body)
 
     def fn(doc):
         same_day = [n for n in doc["notices"] if n.get("posted_on") == posted_on]
@@ -668,7 +673,7 @@ def set_notice(body: str, author: str, posted_on: str | None = None) -> dict:
 
 
 def update_notice(notice_id: int, body: str) -> dict | None:
-    body = (body or "").strip()
+    body = _clean_text(body)
 
     def fn(doc):
         notice = next((n for n in doc["notices"] if n.get("id") == notice_id), None)
