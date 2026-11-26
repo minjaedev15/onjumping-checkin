@@ -1020,11 +1020,6 @@ body.big-font .data-table th, body.big-font .data-table td { font-size: 16px; }
               <span class="bt-track" aria-hidden="true"><span class="bt-knob"></span></span>
               <span class="bt-text">글씨 더 크게</span>
             </label>
-            <label class="big-toggle">
-              <input type="checkbox" id="voice-on" />
-              <span class="bt-track" aria-hidden="true"><span class="bt-knob"></span></span>
-              <span class="bt-text">음성 안내</span>
-            </label>
           </div>
         </div>
       </section>
@@ -1225,9 +1220,10 @@ function shortDateTime(iso) {
 }
 
 function addDays(iso, days) {
-  const d = new Date(`${iso}T00:00:00`);
-  d.setDate(d.getDate() + days);
-  return d.toISOString().slice(0, 10);
+  const [y, m, d] = iso.split("-").map(Number);
+  const base = new Date(Date.UTC(y, m - 1, d));
+  base.setUTCDate(base.getUTCDate() + days);
+  return base.toISOString().slice(0, 10);
 }
 
 /* ---------------- 이펙트 ---------------- */
