@@ -1,8 +1,13 @@
 """Vercel 서버리스 진입점 (WSGI).
 
-Vercel 은 이 파일의 `app` 을 호출한다. 로컬 server.py 와 같은 webapp.app 을 쓰므로
-화면·동작이 같고, 저장소만 /tmp 로 옮긴다(서버리스 파일시스템은 읽기 전용이며
-콜드 스타트마다 시드 계정으로 다시 만들어진다).
+Vercel 은 이 파일의 `app` 을 호출한다. 로컬 server.py 와 같은 webapp.app 을 쓴다.
+
+저장소는 환경변수로 정해진다.
+    KV_REST_API_URL / KV_REST_API_TOKEN (Vercel Storage: Upstash Redis) → 영구 저장소
+    없으면 → /tmp SQLite (화면 확인용, 콜드 스타트마다 초기화)
+
+관리자 비밀번호는 ADMIN_PASSWORD(또는 ADMIN_PASSWORD_HASH), 세션 서명 키는
+SESSION_SECRET 환경변수로만 들어간다. 저장소에는 비밀번호가 남지 않는다.
 """
 
 from __future__ import annotations

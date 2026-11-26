@@ -1,11 +1,15 @@
 """온점핑 출석 — 서버 렌더링 화면 (WSGI).
 
-로컬 server.py 와 Vercel api/index.py 가 같은 `app` 을 쓴다. 화면은 카드 한 줄
-레이아웃이고, 폼 전송 → 리다이렉트 → 플래시 메시지 방식이라 자바스크립트가 없다.
+로컬 server.py 와 Vercel api/index.py 가 같은 `app` 을 쓴다. 자바스크립트 없이
+폼 전송 → 리다이렉트 → 플래시 메시지로 동작하고, 화면은 페이지별로 나뉜다.
 
-    /            오늘 출석 화면 (로그인 필요)
-    /login       로그인 / 로그아웃
-    /admin       관리자 화면 (공지 · 휴강 · 회원)
+    /                 오늘 출석 (로그인 필요)
+    /notices          공지
+    /auto             평일 자동 출석 · 내 정보
+    /login            로그인
+    /admin            관리자: 오늘 출석 명단 · 휴강
+    /admin/notices    관리자: 공지 관리
+    /admin/users      관리자: 회원 관리
 """
 
 from __future__ import annotations
@@ -15,7 +19,7 @@ import hmac
 import os
 import re
 import urllib.parse
-from datetime import date, timedelta
+from datetime import date
 from http.cookies import SimpleCookie
 
 import store
@@ -47,66 +51,93 @@ body {
     -webkit-text-size-adjust: 100%;
 }
 
-header {
-    background: #5865f2;
-    color: white;
-    padding: 18px;
-    text-align: center;
-    font-size: 22px;
-    font-weight: bold;
+/* 상단 헤더 + 탭 */
+.topbar { background: #5865f2; color: #fff; }
+.topbar-inner {
+    max-width: 980px;
+    margin: 0 auto;
+    padding: 12px 20px 10px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    flex-wrap: wrap;
+}
+.brand {
+    color: #fff;
+    text-decoration: none;
+    font-size: 19px;
+    font-weight: 700;
     letter-spacing: -0.3px;
+    white-space: nowrap;
 }
+.tabs { display: flex; gap: 4px; flex-wrap: wrap; flex: 1 1 auto; min-width: 0; }
+.tab {
+    color: #e3e6ff;
+    text-decoration: none;
+    padding: 7px 12px;
+    border-radius: 999px;
+    font-size: 14px;
+    white-space: nowrap;
+}
+.tab:hover { background: rgba(255, 255, 255, 0.14); }
+.tab.active { background: #fff; color: #5865f2; font-weight: 700; }
+.tab.admin { border: 1px solid rgba(255, 255, 255, 0.45); }
+.who {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 14px;
+    color: #e3e6ff;
+    white-space: nowrap;
+}
+.who a { color: #fff; text-decoration: none; opacity: 0.9; }
+.who a:hover { opacity: 1; text-decoration: underline; }
 
-.container {
-    max-width: 650px;
-    margin: 25px auto;
-    padding: 15px;
-}
+.container { max-width: 720px; margin: 26px auto 48px; padding: 0 18px; }
+.container.wide { max-width: 980px; }
+
+.page-head { margin: 0 4px 16px; }
+.page-head h1 { margin: 0; font-size: 24px; letter-spacing: -0.4px; }
+.page-head p { margin: 6px 0 0; color: #6b7180; font-size: 14px; }
 
 .card {
-    background: white;
+    background: #fff;
     border-radius: 16px;
-    padding: 20px;
-    margin-bottom: 18px;
+    padding: 20px 22px;
+    margin-bottom: 16px;
     box-shadow: 0 3px 12px rgba(0, 0, 0, 0.06);
 }
+.card > h2 { margin: 0 0 14px; font-size: 18px; letter-spacing: -0.3px; }
+.card > h2:last-child { margin-bottom: 0; }
 
-h2 {
-    margin: 0 0 12px;
-    font-size: 20px;
-    letter-spacing: -0.3px;
-}
+.slots { display: grid; grid-template-columns: repeat(auto-fit, minmax(290px, 1fr)); gap: 14px; }
+.slots .card { margin-bottom: 0; }
 
-h2 .badge { margin-left: 4px; vertical-align: 2px; }
+h1, h2, h3 { font-weight: 700; }
 
 input, select, textarea {
     width: 100%;
-    padding: 13px;
-    margin: 7px 0;
-    border: 1px solid #ddd;
+    padding: 12px 13px;
+    margin: 6px 0;
+    border: 1px solid #dde1e9;
     border-radius: 9px;
     font-size: 16px;
     font-family: inherit;
-    background: white;
+    background: #fff;
     color: #222;
 }
-
+input:focus, select:focus, textarea:focus { outline: 2px solid #c3c9ff; border-color: #5865f2; }
 textarea { min-height: 104px; resize: vertical; line-height: 1.55; }
 
-input[type=checkbox] {
-    width: 22px;
-    height: 22px;
-    margin: 0;
-    accent-color: #5865f2;
-    flex: 0 0 auto;
-}
+input[type=checkbox] { width: 22px; height: 22px; margin: 0; accent-color: #5865f2; flex: 0 0 auto; }
 
 button, .button {
     display: inline-block;
     border: none;
     background: #5865f2;
-    color: white;
-    padding: 12px 16px;
+    color: #fff;
+    padding: 11px 16px;
     border-radius: 9px;
     font-size: 15px;
     font-family: inherit;
@@ -114,83 +145,127 @@ button, .button {
     text-decoration: none;
     text-align: center;
 }
-
-button:hover, .button:hover { opacity: 0.85; }
-
-button:disabled { background: #c7cbd6; cursor: not-allowed; opacity: 1; }
-
-.danger { background: #e74c3c; }
-.gray { background: #777; }
-.green { background: #2ecc71; }
+button:hover, .button:hover { filter: brightness(0.94); }
+button:disabled { background: #c7cbd6; cursor: not-allowed; }
+button.small, .button.small { padding: 8px 12px; font-size: 14px; border-radius: 8px; }
+button.soft { background: #eef0ff; color: #5865f2; }
+button.danger { background: #e74c3c; }
+button.ghost { background: #fff; color: #c0392b; border: 1px solid #f0c4bd; }
+button.gray { background: #eef0f4; color: #4a4f5c; }
 .wide { width: 100%; display: block; }
 
-.attendance-box {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 10px;
-    padding: 13px;
-    border-bottom: 1px solid #eee;
-}
-
-.attendance-box:last-child { border-bottom: none; }
+.form-row { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
+.form-row input { margin: 0; }
+.form-row button { flex: 0 0 auto; }
 
 .badge {
     display: inline-block;
     background: #e8ebff;
     color: #5865f2;
-    padding: 5px 10px;
+    padding: 4px 10px;
     border-radius: 20px;
     font-size: 13px;
     font-weight: 600;
     vertical-align: middle;
+    white-space: nowrap;
 }
-
 .badge.off { background: #f0f1f5; color: #8a8f9c; }
 .badge.crown { background: #fff4d6; color: #b7791f; }
+.badge.today { background: #e6f7ee; color: #1e8f5b; }
+
+.muted { color: #7b818e; font-size: 13px; }
+.small { color: #777; font-size: 13px; margin: 8px 0 0; }
 
 .message {
-    padding: 12px;
-    background: #fff3cd;
-    border-radius: 8px;
-    margin-bottom: 12px;
+    padding: 12px 14px;
+    background: #eef0ff;
+    color: #3b43b8;
+    border-radius: 10px;
+    margin-bottom: 16px;
+    font-size: 14px;
 }
+.message.error { background: #fdecea; color: #c0392b; }
 
 .banner {
-    padding: 14px 16px;
+    padding: 13px 16px;
     background: #fdecea;
     color: #c0392b;
     border-radius: 12px;
-    margin-bottom: 18px;
-    font-weight: bold;
+    margin-bottom: 16px;
+    font-weight: 700;
     text-align: center;
+    font-size: 15px;
 }
 
-.small { color: #777; font-size: 13px; margin: 6px 0 0; }
-.notice-body { margin: 0; line-height: 1.6; white-space: pre-line; }
+/* 타임 카드 */
+.slot-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.slot-title { display: flex; align-items: baseline; gap: 7px; margin-right: auto; }
+.slot-title b { font-size: 19px; letter-spacing: -0.3px; }
+.slot-title .name { color: #8a8f9c; font-size: 13px; }
+.people { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 14px; }
+.chip {
+    background: #f4f5f9;
+    color: #4a4f5c;
+    border-radius: 999px;
+    padding: 5px 11px;
+    font-size: 13px;
+}
+.chip.mine { background: #e8ebff; color: #434dc0; font-weight: 700; }
 
-.nav {
+/* 목록 */
+.list-row {
     display: flex;
-    gap: 8px;
-    flex-wrap: wrap;
-    margin-top: 14px;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 0;
+    border-bottom: 1px solid #eef0f4;
 }
+.list-row:last-child { border-bottom: none; padding-bottom: 0; }
+.list-row:first-child { padding-top: 0; }
+.list-main { min-width: 0; flex: 1 1 auto; }
+.list-main b { font-size: 15px; }
+.list-main .meta { display: block; color: #8a8f9c; font-size: 13px; margin-top: 3px; }
+.list-row form { flex: 0 0 auto; margin: 0; }
 
-.row { display: flex; gap: 8px; align-items: center; margin-top: 14px; }
-.row input { margin: 0; }
-.row button { flex: 0 0 auto; }
+.notice-body { margin: 0; line-height: 1.65; white-space: pre-line; font-size: 15px; }
+.notice-card h3 { margin: 0 0 4px; font-size: 15px; }
+.notice-card .meta { color: #8a8f9c; font-size: 13px; margin: 0 0 10px; }
 
 .week-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
-.week-grid .day { font-size: 13px; font-weight: 600; color: #555; text-align: center; }
+.week-grid .day { font-size: 13px; font-weight: 700; color: #555; text-align: center; }
 .week-grid select { padding: 11px 2px; margin: 4px 0 0; font-size: 14px; text-align: center; }
 
-@media(max-width: 500px) {
-    .container { padding: 10px; margin: 18px auto; }
-    .card { padding: 15px; }
-    header { font-size: 20px; padding: 16px; }
+.toggle-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 11px 0;
+    border-bottom: 1px solid #eef0f4;
+}
+.toggle-row:last-of-type { border-bottom: none; }
+
+/* 로그인 */
+.login-wrap { max-width: 380px; margin: 8vh auto 0; padding: 0 18px; }
+.login-wrap .card { padding: 26px 24px; }
+.login-wrap h1 { margin: 0 0 4px; font-size: 22px; letter-spacing: -0.4px; }
+.login-wrap p { margin: 0 0 18px; color: #7b818e; font-size: 14px; }
+
+.empty { color: #8a8f9c; font-size: 14px; margin: 10px 0 0; }
+
+@media(max-width: 560px) {
+    .topbar-inner { padding: 10px 14px 8px; gap: 8px; }
+    .brand { font-size: 17px; }
+    .tabs { gap: 2px; }
+    .tab { padding: 6px 10px; font-size: 13px; }
+    .who { font-size: 13px; }
+    .container { padding: 0 12px; margin: 18px auto 36px; }
+    .card { padding: 16px; border-radius: 14px; }
+    .slots { grid-template-columns: 1fr; }
     .week-grid { gap: 4px; }
     .week-grid select { font-size: 13px; padding: 10px 1px; }
     .week-grid .day { font-size: 12px; }
+    .page-head h1 { font-size: 21px; }
 }
 """
 
@@ -220,8 +295,9 @@ class Response:
         self.cookies[name] = ("", 0)
         return self
 
-    def set_flash(self, message: str) -> "Response":
-        self.cookies[FLASH] = (urllib.parse.quote(message), 60)
+    def set_flash(self, message: str, error: bool = False) -> "Response":
+        payload = ("!" if error else "") + message
+        self.cookies[FLASH] = (urllib.parse.quote(payload), 60)
         self.flash_set = True
         return self
 
@@ -230,6 +306,8 @@ class Response:
             ("Content-Type", self.ctype),
             ("Content-Length", str(len(self.body))),
             ("Cache-Control", "no-store"),
+            ("X-Content-Type-Options", "nosniff"),
+            ("Referrer-Policy", "same-origin"),
         ]
         headers.extend(self.headers)
         for name, (value, max_age) in self.cookies.items():
@@ -244,10 +322,10 @@ class Response:
         return [self.body]
 
 
-def redirect(location: str, flash: str | None = None) -> Response:
+def redirect(location: str, flash: str | None = None, error: bool = False) -> Response:
     resp = Response("", 303).header("Location", location)
     if flash:
-        resp.set_flash(flash)
+        resp.set_flash(flash, error)
     return resp
 
 
@@ -291,15 +369,20 @@ def parse_session(environ) -> int | None:
     return int(raw)
 
 
-def read_flash(environ) -> str:
+def read_flash(environ) -> tuple[str, bool]:
     header = environ.get("HTTP_COOKIE", "")
     if not header:
-        return ""
+        return "", False
     try:
         morsel = SimpleCookie(header).get(FLASH)
     except Exception:
-        return ""
-    return urllib.parse.unquote(morsel.value) if morsel else ""
+        return "", False
+    if not morsel or not morsel.value:
+        return "", False
+    message = urllib.parse.unquote(morsel.value)
+    if message.startswith("!"):
+        return message[1:], True
+    return message, False
 
 
 def read_form(environ) -> dict[str, list[str]]:
@@ -317,17 +400,57 @@ def read_form(environ) -> dict[str, list[str]]:
 # 공통 HTML
 # --------------------------------------------------------------------------- #
 
-def page(content: str, title: str = "On점핑 출석", flash: str = "") -> str:
-    flash_html = f'<div class="message">{esc(flash)}</div>' if flash else ""
+MEMBER_TABS = [
+    ("home", "/", "출석"),
+    ("notices", "/notices", "공지"),
+    ("auto", "/auto", "자동출석"),
+]
+ADMIN_TABS = [
+    ("admin", "/admin", "출석·휴강"),
+    ("admin-notices", "/admin/notices", "공지 관리"),
+    ("admin-users", "/admin/users", "회원"),
+]
+
+
+def header(user: dict | None, active: str | None) -> str:
+    tabs = []
+    for key, href, label in MEMBER_TABS:
+        cls = "tab active" if key == active else "tab"
+        tabs.append(f'<a class="{cls}" href="{href}">{label}</a>')
+    if user and user["is_admin"]:
+        for key, href, label in ADMIN_TABS:
+            cls = "tab admin active" if key == active else "tab admin"
+            tabs.append(f'<a class="{cls}" href="{href}">{label}</a>')
+
+    who = ""
+    if user:
+        who = (
+            f'<div class="who"><span>{esc(user["nickname"])}님</span>'
+            f'<a href="/logout">로그아웃</a></div>'
+        )
+    return (
+        '<header class="topbar"><div class="topbar-inner">'
+        '<a class="brand" href="/">🏃 On점핑 출석</a>'
+        f'<nav class="tabs">{"".join(tabs)}</nav>'
+        f'{who}'
+        "</div></header>"
+    )
+
+
+def page(content: str, *, title: str = "On점핑 출석", user: dict | None = None,
+         active: str | None = None, flash: str = "", error: bool = False, wide: bool = False) -> str:
+    flash_html = ""
+    if flash:
+        flash_html = f'<div class="message{" error" if error else ""}">{esc(flash)}</div>'
+    container = 'class="container wide"' if wide else 'class="container"'
     return (
         "<!DOCTYPE html>\n"
         '<html lang="ko">\n<head>\n<meta charset="UTF-8">\n'
         '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
         f"<title>{esc(title)}</title>\n<style>{CSS}</style>\n</head>\n<body>\n"
-        "<header>🏃 On점핑 출석</header>\n"
-        '<div class="container">\n'
-        f"{flash_html}\n{content}\n"
-        "</div>\n</body>\n</html>\n"
+        f"{header(user, active)}\n"
+        f"<main {container}>\n{flash_html}\n{content}\n</main>\n"
+        "</body>\n</html>\n"
     )
 
 
@@ -336,149 +459,174 @@ def date_label(day: str) -> str:
     return f"{d.year}년 {d.month}월 {d.day}일 {store.WEEKDAY_KO[store.WEEKDAYS[d.weekday()]]}요일"
 
 
-def slot_badge(slot: dict) -> str:
-    return f'<span class="badge">{slot["taken"]} / {slot["capacity"]}명</span>'
+def page_head(title: str, subtitle: str = "") -> str:
+    sub = f"<p>{esc(subtitle)}</p>" if subtitle else ""
+    return f'<div class="page-head"><h1>{esc(title)}</h1>{sub}</div>'
 
 
 # --------------------------------------------------------------------------- #
-# 로그인 화면
+# 로그인
 # --------------------------------------------------------------------------- #
 
-def render_login(flash: str = "") -> Response:
+def render_login(flash: str = "", error: bool = False) -> Response:
     content = """
-<div class="card">
-    <h2>로그인</h2>
-    <form method="POST" action="/login">
-        <input name="username" placeholder="아이디" autocomplete="username"
-               autocapitalize="none" required>
-        <input name="password" type="password" placeholder="비밀번호"
-               autocomplete="current-password" required>
-        <button class="wide">로그인</button>
-    </form>
-    <p class="small">테스트 계정: <b>minjae</b> / <b>1234</b></p>
-    <p class="small">계정은 관리자에게 문의하세요.</p>
+<div class="login-wrap">
+    <div class="card">
+        <h1>로그인</h1>
+        <p>온점핑 출석 관리</p>
+        <form method="POST" action="/login">
+            <input name="username" placeholder="아이디" autocomplete="username"
+                   autocapitalize="none" required>
+            <input name="password" type="password" placeholder="비밀번호"
+                   autocomplete="current-password" required>
+            <button class="wide" style="margin-top:8px">로그인</button>
+        </form>
+        <p class="small">계정은 관리자에게 문의해 주세요.</p>
+    </div>
 </div>
 """
-    return Response(page(content, "로그인 · On점핑 출석", flash))
+    flash_html = f'<div class="message{" error" if error else ""}">{esc(flash)}</div>' if flash else ""
+    return Response(
+        "<!DOCTYPE html>\n<html lang=\"ko\">\n<head>\n<meta charset=\"UTF-8\">\n"
+        '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+        f"<title>로그인 · On점핑 출석</title>\n<style>{CSS}</style>\n</head>\n<body>\n"
+        f"{header(None, None)}\n<main class=\"container\">{flash_html}{content}</main>\n"
+        "</body>\n</html>\n"
+    )
 
 
 # --------------------------------------------------------------------------- #
-# 메인 화면
+# 회원: 오늘 출석 /
 # --------------------------------------------------------------------------- #
 
-def render_index(user: dict, flash: str = "") -> Response:
+def _people_chips(people: list[dict], me_id: int) -> str:
+    if not people:
+        return '<p class="empty">아직 출석자가 없습니다.</p>'
+    chips = []
+    for person in people:
+        mine = person["user_id"] == me_id
+        label = esc(person["nickname"]) + (" (나)" if mine else "")
+        chips.append(f'<span class="chip{" mine" if mine else ""}">{label}</span>')
+    return f'<div class="people">{"".join(chips)}</div>'
+
+
+def render_index(user: dict, flash: str = "", error: bool = False) -> Response:
     today = store.kst_today()
     state = store.get_day(today)
-    notice = store.latest_notice(today)
+    notices = store.list_notices()
     rows = store.list_attendance(today)
-    mine = {row["slot_id"] for row in rows if row["user_id"] == user["id"]}
-    by_slot: dict[str, list[dict]] = {slot["id"]: [] for slot in state["slots"]}
+
+    mine_by_slot = {row["slot_id"]: row for row in rows if row["user_id"] == user["id"]}
+    by_slot: dict[str, list[dict]] = {}
     for row in rows:
         by_slot.setdefault(row["slot_id"], []).append(row)
 
-    parts: list[str] = []
+    parts = [page_head("오늘 출석", f"{date_label(today)} · 타임마다 11명 선착순")]
 
-    # 인사 카드
-    admin_link = ' <a class="button" href="/admin">관리자</a>' if user["is_admin"] else ""
-    parts.append(f"""
-<div class="card">
-    <h2>안녕하세요, {esc(user['nickname'])}님 👋</h2>
-    <p class="small">{date_label(today)}</p>
-    <div class="nav">
-        <a class="button gray" href="/logout">로그아웃</a>{admin_link}
-    </div>
-    <form method="POST" action="/profile" class="row">
-        <input name="nickname" value="{esc(user['nickname'])}" maxlength="20"
-               placeholder="닉네임" aria-label="닉네임">
-        <button class="green">닉네임 변경</button>
-    </form>
-</div>""")
-
-    # 전체 휴강 배너
     if state["closed_all"]:
-        parts.append('\n<div class="banner">🚫 오늘은 전체 휴강입니다.</div>')
+        parts.append('<div class="banner">🚫 오늘은 전체 휴강입니다.</div>')
 
-    # 오늘의 공지
-    if notice:
+    today_notice = next((n for n in notices if n["posted_on"] == today), None)
+    if today_notice:
         parts.append(f"""
 <div class="card">
     <h2>📢 오늘의 공지</h2>
-    <p class="notice-body">{esc(notice['body'])}</p>
-    <p class="small">{esc(notice['author'])} · {notice['posted_on']}</p>
+    <p class="notice-body">{esc(today_notice['body'])}</p>
+    <p class="small">{esc(today_notice['author'])} · {today_notice['posted_on']}</p>
 </div>""")
 
-    # 출석 체크
-    options = []
-    for slot in state["slots"]:
-        marks = []
-        disabled = False
-        if state["closed_all"]:
-            disabled = True
-        if slot["blocked"]:
-            marks.append("(휴강)")
-            disabled = True
-        if slot["full"]:
-            marks.append("(마감)")
-            disabled = True
-        if slot["id"] in mine:
-            marks.append("(출석함)")
-            disabled = True
-        suffix = (" " + " ".join(marks)) if marks else ""
-        label = f'{slot["time"]} · {slot["name"]}{suffix}'
-        options.append(f'<option value="{slot["id"]}"{" disabled" if disabled else ""}>{esc(label)}</option>')
-
-    can_check = any(slot["open"] and slot["id"] not in mine for slot in state["slots"])
-    if state["closed_all"]:
-        hint = "오늘은 전체 휴강이라 출석할 수 없습니다."
-    elif not can_check:
-        hint = "지금 출석할 수 있는 타임이 없습니다."
-    else:
-        hint = "타임마다 11명 선착순이에요."
-    parts.append(f"""
-<div class="card">
-    <h2>✅ 출석 체크</h2>
-    <form method="POST" action="/checkin">
-        <select name="slot_id" aria-label="출석 타임"{" disabled" if not can_check else ""}>
-            {''.join(options)}
-        </select>
-        <button class="wide"{" disabled" if not can_check else ""}>출석하기</button>
-    </form>
-    <p class="small">{hint}</p>
-</div>""")
-
-    # 시간별 출석 명단
+    cards = []
     for slot in state["slots"]:
         people = by_slot.get(slot["id"], [])
-        blocked_badge = ' <span class="badge off">(휴강)</span>' if slot["blocked"] else ""
-        if people:
-            rows_html = ""
-            for person in people:
-                who = f"<b>{esc(person['nickname'])}</b>"
-                if user["is_admin"]:
-                    who += f' <span class="small">@{esc(person["username"])}</span>'
-                cancel = ""
-                if user["is_admin"] or person["user_id"] == user["id"]:
-                    cancel = f"""
-                    <form method="POST" action="/checkin/cancel/{person['id']}">
-                        <button class="danger">취소</button>
-                    </form>"""
-                rows_html += f'\n    <div class="attendance-box"><div>{who}</div>{cancel}</div>'
+        my_record = mine_by_slot.get(slot["id"])
+        action = ""
+        if state["closed_all"]:
+            action = '<span class="badge off">전체 휴강</span>'
+        elif slot["blocked"]:
+            action = '<span class="badge off">휴강</span>'
+        elif my_record:
+            action = (f'<form method="POST" action="/checkin/cancel/{my_record["id"]}">'
+                      '<button class="small ghost">출석 취소</button></form>')
+        elif slot["full"]:
+            action = '<span class="badge off">마감</span>'
         else:
-            empty = "휴강으로 막힌 타임입니다." if slot["blocked"] else "아직 출석자가 없습니다."
-            rows_html = f'\n    <p class="small">{empty}</p>'
-        parts.append(f"""
+            action = (f'<form method="POST" action="/checkin">'
+                      f'<input type="hidden" name="slot_id" value="{slot["id"]}">'
+                      '<button class="small">출석하기</button></form>')
+        cards.append(f"""
+<section class="card">
+    <div class="slot-head">
+        <div class="slot-title"><b>{slot["time"]}</b><span class="name">{slot["name"]}</span></div>
+        <span class="badge">{slot["taken"]} / {slot["capacity"]}</span>
+        {action}
+    </div>
+    {_people_chips(people, user["id"])}
+</section>""")
+    parts.append(f'<div class="slots">{"".join(cards)}</div>')
+
+    weekly = user["weekly"]
+    summary = " · ".join(
+        f"{store.WEEKDAY_KO[d]} {store.slot_info(weekly[d])['time'] if weekly[d] else '쉼'}"
+        for d in store.WEEKDAY_KEYS
+    )
+    parts.append(f"""
 <div class="card">
-    <h2>🕒 {slot["time"]} {slot_badge(slot)}{blocked_badge}</h2>{rows_html}
+    <h2>🗓️ 내 자동 출석</h2>
+    <p class="notice-body" style="font-size:14px">{esc(summary)}</p>
+    <p class="small"><a href="/auto">자동 출석 설정 바꾸기 →</a></p>
 </div>""")
 
-    # 평일 자동 출석
+    return Response(page("\n".join(parts), user=user, active="home", flash=flash, error=error))
+
+
+# --------------------------------------------------------------------------- #
+# 회원: 공지 /notices
+# --------------------------------------------------------------------------- #
+
+def render_notices(user: dict, flash: str = "", error: bool = False) -> Response:
+    today = store.kst_today()
+    notices = store.list_notices()
+    today_notice = next((n for n in notices if n["posted_on"] == today), None)
+    others = [n for n in notices if n is not today_notice]
+
+    parts = [page_head("공지", "오늘의 공지와 지난 공지 목록")]
+    if today_notice:
+        parts.append(f"""
+<div class="card">
+    <h2>📢 오늘의 공지 <span class="badge today">오늘</span></h2>
+    <p class="notice-body">{esc(today_notice['body'])}</p>
+    <p class="small">{esc(today_notice['author'])} · {today_notice['posted_on']}</p>
+</div>""")
+    else:
+        parts.append('<div class="card"><h2>📢 오늘의 공지</h2>'
+                     '<p class="empty">오늘 올라온 공지가 없습니다.</p></div>')
+
+    if others:
+        rows = []
+        for notice in others:
+            rows.append(f"""
+<div class="card notice-card">
+    <h3>{notice['posted_on']}</h3>
+    <p class="meta">{esc(notice['author'])}</p>
+    <p class="notice-body">{esc(notice['body'])}</p>
+</div>""")
+        parts.append('<h2 style="margin:22px 4px 12px;font-size:17px">지난 공지</h2>' + "".join(rows))
+
+    return Response(page("\n".join(parts), title="공지 · On점핑 출석", user=user, active="notices",
+                         flash=flash, error=error))
+
+
+# --------------------------------------------------------------------------- #
+# 회원: 자동 출석 /auto
+# --------------------------------------------------------------------------- #
+
+def render_auto(user: dict, flash: str = "", error: bool = False) -> Response:
     day_options = [("", "쉼")] + [(slot["id"], slot["time"]) for slot in store.SLOTS]
     columns = ""
-    summary = []
     for key in store.WEEKDAY_KEYS:
-        current = user["weekly"].get(key)
+        current = user["weekly"].get(key) or ""
         opts = "".join(
-            f'<option value="{value}"{" selected" if value == (current or "") else ""}>{label}</option>'
+            f'<option value="{value}"{" selected" if value == current else ""}>{label}</option>'
             for value, label in day_options
         )
         columns += f"""
@@ -486,167 +634,273 @@ def render_index(user: dict, flash: str = "") -> Response:
             <div class="day">{store.WEEKDAY_KO[key]}</div>
             <select name="{key}" aria-label="{store.WEEKDAY_KO[key]}요일 타임">{opts}</select>
         </div>"""
-        summary.append(f"{store.WEEKDAY_KO[key]} {store.slot_info(current)['time'] if current else '쉼'}")
-    parts.append(f"""
+
+    parts = [
+        page_head("자동 출석", "평일(월~금)에 밴드 대신 잡아 둘 타임을 정해 두세요"),
+        f"""
 <div class="card">
     <h2>🗓️ 평일 자동 출석</h2>
-    <form method="POST" action="/weekly">
-        <div class="week-grid">{columns}
-        </div>
+    <form method="POST" action="/auto">
+        <div class="week-grid">{columns}</div>
         <button class="wide" style="margin-top:14px">저장</button>
     </form>
-    <p class="small">내 설정: {' · '.join(summary)}</p>
-</div>""")
-
-    return Response(page("\n".join(parts), "On점핑 출석", flash))
+    <p class="small">주말은 설정하지 않습니다. 비워 두면 그 요일은 자동 출석을 하지 않아요.</p>
+</div>""",
+        f"""
+<div class="card">
+    <h2>👤 내 정보</h2>
+    <div class="list-row">
+        <div class="list-main"><b>{esc(user['nickname'])}</b><span class="meta">@{esc(user['username'])}</span></div>
+    </div>
+    <form method="POST" action="/profile">
+        <input name="nickname" value="{esc(user['nickname'])}" maxlength="20"
+               placeholder="닉네임" aria-label="닉네임">
+        <button class="wide" style="margin-top:8px">닉네임 변경</button>
+    </form>
+</div>""",
+    ]
+    return Response(page("\n".join(parts), title="자동 출석 · On점핑 출석", user=user, active="auto",
+                         flash=flash, error=error))
 
 
 # --------------------------------------------------------------------------- #
-# 관리자 화면
+# 관리자: 출석·휴강 /admin
 # --------------------------------------------------------------------------- #
 
-def render_admin(user: dict, flash: str = "") -> Response:
+def render_admin(user: dict, flash: str = "", error: bool = False) -> Response:
     today = store.kst_today()
     state = store.get_day(today)
-    notice = store.latest_notice(today)
-    users = store.list_users()
+    rows = store.list_attendance(today)
+    by_slot: dict[str, list[dict]] = {}
+    for row in rows:
+        by_slot.setdefault(row["slot_id"], []).append(row)
 
-    parts = [f"""
-<div class="card">
-    <h2>🛠️ 관리자 페이지</h2>
-    <p class="small">{date_label(today)}</p>
-    <div class="nav">
-        <a class="button gray" href="/">메인으로</a>
-    </div>
-</div>"""]
-
-    # 오늘의 공지
-    notice_value = esc(notice["body"]) if notice else ""
-    delete_form = ""
-    if notice:
-        delete_form = """
-    <form method="POST" action="/admin/notice/delete" style="margin-top:8px">
-        <button class="danger wide">공지 삭제</button>
-    </form>"""
-    parts.append(f"""
-<div class="card">
-    <h2>📢 오늘의 공지</h2>
-    <form method="POST" action="/admin/notice">
-        <textarea name="body" placeholder="오늘의 공지를 입력하세요" required>{notice_value}</textarea>
-        <button class="wide">공지 등록</button>
-    </form>{delete_form}
-</div>""")
-
-    # 휴강 / 타임 차단
     slot_rows = ""
     for slot in state["slots"]:
         checked = " checked" if slot["blocked"] else ""
         slot_rows += f"""
-    <label class="attendance-box">
-        <span><b>{slot["time"]}</b> <span class="small">{slot["name"]}</span></span>
-        <input type="checkbox" name="blocked" value="{slot["id"]}"{checked}>
+    <label class="toggle-row">
+        <span><b>{slot["time"]}</b> <span class="muted">{slot["name"]}</span>
+        <span class="badge">{slot["taken"]} / {slot["capacity"]}</span></span>
+        <input type="checkbox" name="blocked" value="{slot["id"]}"{checked} aria-label="{slot["time"]} 휴강">
     </label>"""
+
+    parts = [page_head("출석·휴강", f"{date_label(today)} · 전체 {len(rows)}명 출석")]
     parts.append(f"""
 <div class="card">
-    <h2>🚫 휴강 / 타임 차단</h2>
+    <h2>🚫 휴강 제어</h2>
     <form method="POST" action="/admin/day">
-        <label class="attendance-box">
+        <label class="toggle-row">
             <span><b>오늘 전체 휴강</b></span>
-            <input type="checkbox" name="closed_all" value="1"{" checked" if state["closed_all"] else ""}>
+            <input type="checkbox" name="closed_all" value="1"{" checked" if state["closed_all"] else ""}
+                   aria-label="전체 휴강">
         </label>{slot_rows}
         <button class="wide" style="margin-top:14px">저장</button>
     </form>
+    <p class="small">체크한 타임은 오늘 출석할 수 없습니다. 전체 휴강이면 모든 타임이 닫힙니다.</p>
 </div>""")
 
-    # 회원 생성
-    parts.append("""
+    cards = []
+    for slot in state["slots"]:
+        people = by_slot.get(slot["id"], [])
+        head_badges = f'<span class="badge">{slot["taken"]} / {slot["capacity"]}</span>'
+        if slot["blocked"]:
+            head_badges += ' <span class="badge off">휴강</span>'
+        elif slot["full"]:
+            head_badges += ' <span class="badge off">마감</span>'
+        rows_html = ""
+        if people:
+            for person in people:
+                rows_html += f"""
+        <div class="list-row">
+            <div class="list-main"><b>{esc(person['nickname'])}</b>
+                <span class="meta">@{esc(person['username'])} · {person['created_at'][11:16]}</span></div>
+            <form method="POST" action="/checkin/cancel/{person['id']}">
+                <button class="small ghost">취소</button>
+            </form>
+        </div>"""
+        else:
+            rows_html = '<p class="empty">아직 출석자가 없습니다.</p>'
+        cards.append(f"""
+<section class="card">
+    <div class="slot-head">
+        <div class="slot-title"><b>{slot["time"]}</b><span class="name">{slot["name"]}</span></div>
+        {head_badges}
+    </div>
+    {rows_html}
+</section>""")
+    parts.append(f'<div class="slots">{"".join(cards)}</div>')
+
+    return Response(page("\n".join(parts), title="출석·휴강 · On점핑 출석",
+                         user=user, active="admin", flash=flash, error=error, wide=True))
+
+
+# --------------------------------------------------------------------------- #
+# 관리자: 공지 관리 /admin/notices
+# --------------------------------------------------------------------------- #
+
+def render_admin_notices(user: dict, flash: str = "", error: bool = False) -> Response:
+    today = store.kst_today()
+    notices = store.list_notices()
+    today_notice = next((n for n in notices if n["posted_on"] == today), None)
+    value = esc(today_notice["body"]) if today_notice else ""
+
+    parts = [page_head("공지 관리", "오늘의 공지 등록과 지난 공지 수정·삭제")]
+    parts.append(f"""
 <div class="card">
-    <h2>👤 회원 생성</h2>
-    <form method="POST" action="/admin/users">
-        <input name="username" placeholder="새 아이디" autocapitalize="none" required>
-        <input name="password" type="password" placeholder="새 비밀번호" minlength="4" required>
-        <input name="nickname" placeholder="닉네임(선택)" maxlength="20">
-        <button class="wide">회원 생성</button>
+    <h2>📢 오늘의 공지</h2>
+    <form method="POST" action="/admin/notices">
+        <textarea name="body" placeholder="오늘의 공지를 입력하세요" required>{value}</textarea>
+        <button class="wide" style="margin-top:8px">{"공지 수정" if today_notice else "공지 등록"}</button>
+    </form>
+    <p class="small">하루에 한 건입니다. 오늘 공지를 다시 저장하면 내용만 바뀝니다.</p>
+</div>""")
+
+    if notices:
+        blocks = []
+        for notice in notices:
+            badge = ' <span class="badge today">오늘</span>' if notice["posted_on"] == today else ""
+            blocks.append(f"""
+<div class="card notice-card">
+    <h3>{notice['posted_on']}{badge}</h3>
+    <p class="meta">{esc(notice['author'])} · 수정 {notice['updated_at'][:16].replace('T', ' ')}</p>
+    <form method="POST" action="/admin/notices/{notice['id']}">
+        <textarea name="body" required>{esc(notice['body'])}</textarea>
+        <button class="wide" style="margin-top:8px">저장</button>
+    </form>
+    <form method="POST" action="/admin/notices/{notice['id']}/delete" style="margin-top:8px">
+        <button class="wide ghost">삭제</button>
     </form>
 </div>""")
+        parts.append('<h2 style="margin:22px 4px 12px;font-size:17px">공지 목록</h2>' + "".join(blocks))
+    else:
+        parts.append('<div class="card"><p class="empty">등록된 공지가 없습니다.</p></div>')
 
-    # 회원 목록
+    return Response(page("\n".join(parts), title="공지 관리 · On점핑 출석", user=user,
+                         active="admin-notices", flash=flash, error=error, wide=True))
+
+
+# --------------------------------------------------------------------------- #
+# 관리자: 회원 관리 /admin/users
+# --------------------------------------------------------------------------- #
+
+def render_admin_users(user: dict, flash: str = "", error: bool = False) -> Response:
+    users = store.list_users()
     rows_html = ""
     for member in users:
-        crown = ' <span class="badge crown">👑 관리자</span>' if member["is_admin"] else ""
+        crown = ' <span class="badge crown">👑 관리자</span>' if member["is_admin"] else \
+                ' <span class="badge off">회원</span>'
+        weekly = member["weekly"]
+        summary = " · ".join(
+            f"{store.WEEKDAY_KO[d]} {store.slot_info(weekly[d])['time'] if weekly[d] else '쉼'}"
+            for d in store.WEEKDAY_KEYS
+        )
         delete = ""
         if not member["is_admin"]:
             delete = f"""
         <form method="POST" action="/admin/users/{member['id']}/delete">
-            <button class="danger">삭제</button>
+            <button class="small ghost">삭제</button>
         </form>"""
         rows_html += f"""
-    <div class="attendance-box">
-        <div><b>{esc(member['nickname'])}</b> <span class="small">@{esc(member['username'])}</span>{crown}</div>{delete}
+    <div class="list-row">
+        <div class="list-main"><b>{esc(member['nickname'])}</b> <span class="muted">@{esc(member['username'])}</span>{crown}
+            <span class="meta">자동 출석 · {esc(summary)}</span></div>{delete}
     </div>"""
-    parts.append(f"""
-<div class="card">
-    <h2>👥 회원 목록 <span class="badge">{len(users)}명</span></h2>{rows_html}
-</div>""")
 
-    return Response(page("\n".join(parts), "관리자 · On점핑 출석", flash))
+    parts = [
+        page_head("회원 관리", f"전체 {len(users)}명"),
+        """
+<div class="card">
+    <h2>➕ 회원 만들기</h2>
+    <form method="POST" action="/admin/users">
+        <input name="username" placeholder="아이디 (영문 소문자·숫자·밑줄 3~20자)"
+               autocapitalize="none" required>
+        <input name="password" type="password" placeholder="비밀번호 (4자 이상)" minlength="4" required>
+        <input name="nickname" placeholder="닉네임 (선택)" maxlength="20">
+        <button class="wide" style="margin-top:8px">회원 생성</button>
+    </form>
+</div>""",
+        f"""
+<div class="card">
+    <h2>👥 회원 목록</h2>{rows_html}
+</div>""",
+    ]
+    return Response(page("\n".join(parts), title="회원 관리 · On점핑 출석", user=user,
+                         active="admin-users", flash=flash, error=error, wide=True))
 
 
 # --------------------------------------------------------------------------- #
 # 라우팅
 # --------------------------------------------------------------------------- #
 
-def route(method: str, path: str, form: dict[str, list[str]], user: dict | None, flash: str) -> Response:
+def _guard_admin(user: dict | None, flash: str) -> Response | None:
+    if not user:
+        return redirect("/login")
+    if not user["is_admin"]:
+        return redirect("/", "관리자만 접근할 수 있어요.", error=True)
+    return None
+
+
+def route(method: str, path: str, form: dict[str, list[str]], user: dict | None, flash: str,
+          flash_error: bool) -> Response:
     if path == "/health":
         return Response("OK", 200, "text/plain; charset=utf-8")
 
-    if method == "GET" and path in ("/", "/index.html"):
-        if not user:
-            return redirect("/login")
-        return render_index(user, flash)
-
-    if method == "GET" and path == "/login":
-        if user:
-            return redirect("/")
-        return render_login(flash)
-
-    if method == "POST" and path == "/login":
-        username = form_value(form, "username")
-        password = form_value(form, "password")
-        found = store.authenticate(username, password)
-        if not found:
-            return render_login("아이디 또는 비밀번호가 틀렸습니다.")
-        resp = redirect("/", f"{found['nickname']}님, 반가워요!")
-        return resp.set_cookie(COOKIE, session_cookie(found["id"]))
+    # ---- 로그인 / 로그아웃 ----
+    if path == "/login":
+        if method == "GET":
+            if user:
+                return redirect("/")
+            return render_login(flash, flash_error)
+        if method == "POST":
+            found = store.authenticate(form_value(form, "username"), form_value(form, "password"))
+            if not found:
+                return render_login("아이디 또는 비밀번호가 틀렸습니다.", error=True)
+            target = "/admin" if found["is_admin"] else "/"
+            resp = redirect(target, f"{found['nickname']}님, 반가워요!")
+            return resp.set_cookie(COOKIE, session_cookie(found["id"]))
 
     if path == "/logout":
         resp = redirect("/login", "로그아웃했습니다.")
         return resp.clear_cookie(COOKIE)
 
-    if method == "POST" and path == "/profile":
+    # ---- 회원 화면 ----
+    if path in ("/", "/index.html"):
+        if not user:
+            return redirect("/login")
+        return render_index(user, flash, flash_error)
+
+    if path == "/notices" and method == "GET":
+        if not user:
+            return redirect("/login")
+        return render_notices(user, flash, flash_error)
+
+    if path == "/auto":
+        if not user:
+            return redirect("/login")
+        if method == "GET":
+            return render_auto(user, flash, flash_error)
+        weekly = {key: form_value(form, key) for key in store.WEEKDAY_KEYS}
+        store.set_weekly(user["id"], weekly)
+        return redirect("/auto", "자동 출석 설정을 저장했어요.")
+
+    if path == "/profile" and method == "POST":
         if not user:
             return redirect("/login")
         nickname = form_value(form, "nickname")
         if not nickname:
-            return redirect("/", "닉네임을 입력해 주세요.")
+            return redirect("/auto", "닉네임을 입력해 주세요.", error=True)
         store.set_nickname(user["id"], nickname)
-        return redirect("/", "닉네임을 바꿨어요.")
+        return redirect("/auto", "닉네임을 바꿨어요.")
 
-    if method == "POST" and path == "/weekly":
-        if not user:
-            return redirect("/login")
-        weekly = {key: form_value(form, key) for key in store.WEEKDAY_KEYS}
-        store.set_weekly(user["id"], weekly)
-        return redirect("/", "평일 자동 출석을 저장했어요.")
-
-    if method == "POST" and path == "/checkin":
+    if path == "/checkin" and method == "POST":
         if not user:
             return redirect("/login")
         slot_id = form_value(form, "slot_id")
         try:
             store.check_in(user["id"], store.kst_today(), slot_id)
         except store.CheckinError as exc:
-            return redirect("/", exc.message)
+            return redirect("/", exc.message, error=True)
         return redirect("/", f"{store.slot_info(slot_id)['time']} 출석 완료!")
 
     match = re.fullmatch(r"/checkin/cancel/(\d+)", path)
@@ -655,89 +909,109 @@ def route(method: str, path: str, form: dict[str, list[str]], user: dict | None,
             return redirect("/login")
         record = store.get_attendance(int(match.group(1)))
         if record is None:
-            return redirect("/", "출석 기록을 찾을 수 없습니다.")
+            return redirect("/", "출석 기록을 찾을 수 없습니다.", error=True)
         if record["user_id"] != user["id"] and not user["is_admin"]:
-            return redirect("/", "본인 출석만 취소할 수 있어요.")
+            return redirect("/", "본인 출석만 취소할 수 있어요.", error=True)
         store.cancel_checkin(record["id"])
-        return redirect("/", "출석을 취소했어요.")
+        back = "/admin" if user["is_admin"] and record["user_id"] != user["id"] else "/"
+        return redirect(back, "출석을 취소했어요.")
 
-    if path == "/admin":
-        if not user:
-            return redirect("/login")
-        if not user["is_admin"]:
-            return redirect("/", "관리자만 접근할 수 있어요.")
-
-        if method == "POST":
-            # notice/notice-delete/users/day 는 각자의 경로에서 처리한다.
-            return route_post_admin(path, form, user)
-
-        return render_admin(user, flash)
-
-    if path.startswith("/admin/") and method == "POST":
-        if not user:
-            return redirect("/login")
-        if not user["is_admin"]:
-            return redirect("/", "관리자만 접근할 수 있어요.")
-        return route_post_admin(path, form, user)
-
-    return Response(page('<div class="card"><h2>페이지를 찾을 수 없습니다.</h2>'
-                         '<p class="small">주소를 확인해 주세요.</p>'
-                         '<div class="nav"><a class="button gray" href="/">메인으로</a></div></div>',
-                         "404 · On점핑 출석"), 404)
-
-
-def route_post_admin(path: str, form: dict[str, list[str]], user: dict) -> Response:
-    today = store.kst_today()
-
-    if path == "/admin":
-        return redirect("/admin")
-
-    if path == "/admin/notice":
-        body = (form.get("body") or [""])[0].strip()
-        if not body:
-            return redirect("/admin", "공지 내용을 입력해 주세요.")
-        store.set_notice(body, user["nickname"], today)
-        return redirect("/admin", "오늘의 공지를 등록했어요.")
-
-    if path == "/admin/notice/delete":
-        notice = store.latest_notice(today)
-        if not notice:
-            return redirect("/admin", "삭제할 공지가 없습니다.")
-        store.delete_notice(notice["id"])
-        return redirect("/admin", "공지를 삭제했어요.")
-
-    if path == "/admin/day":
-        closed_all = "1" in (form.get("closed_all") or [])
-        blocked = form.get("blocked") or []
-        store.set_day(today, closed_all=closed_all, blocked=blocked)
-        if closed_all:
-            return redirect("/admin", "오늘을 전체 휴강으로 설정했어요.")
+    # ---- 관리자 화면 ----
+    if path == "/admin" or path.startswith("/admin/"):
+        blocked = _guard_admin(user, flash)
         if blocked:
-            times = ", ".join(store.slot_info(s)["time"] for s in blocked if s in store.SLOT_BY_ID)
-            return redirect("/admin", f"{times} 타임을 휴강으로 막았어요.")
-        return redirect("/admin", "휴강 설정을 모두 풀었어요.")
+            return blocked
 
-    if path == "/admin/users":
-        username = form_value(form, "username").lower()
-        password = form_value(form, "password")
-        nickname = form_value(form, "nickname")
-        if not re.fullmatch(r"[a-z0-9_]{3,20}", username):
-            return redirect("/admin", "아이디는 영문 소문자·숫자·밑줄 3~20자로 만들어 주세요.")
-        if len(password) < 4:
-            return redirect("/admin", "비밀번호는 4자 이상이어야 합니다.")
-        if store.username_taken(username):
-            return redirect("/admin", "이미 존재하는 아이디입니다.")
-        store.create_user(username, password, nickname or username)
-        return redirect("/admin", f"{nickname or username} 회원을 만들었어요.")
+        if path == "/admin":
+            if method == "POST":
+                closed_all = "1" in (form.get("closed_all") or [])
+                blocked_slots = form.get("blocked") or []
+                store.set_day(store.kst_today(), closed_all=closed_all, blocked=blocked_slots)
+                if closed_all:
+                    return redirect("/admin", "오늘을 전체 휴강으로 설정했어요.")
+                if blocked_slots:
+                    times = ", ".join(store.slot_info(s)["time"] for s in blocked_slots
+                                      if s in store.SLOT_BY_ID)
+                    return redirect("/admin", f"{times} 타임을 휴강으로 막았어요.")
+                return redirect("/admin", "휴강 설정을 모두 풀었어요.")
+            return render_admin(user, flash, flash_error)
 
-    match = re.fullmatch(r"/admin/users/(\d+)/delete", path)
-    if match:
-        if not store.delete_user(int(match.group(1))):
-            return redirect("/admin", "삭제할 수 없는 계정입니다.")
-        return redirect("/admin", "회원을 삭제했어요.")
+        if path == "/admin/day" and method == "POST":
+            closed_all = "1" in (form.get("closed_all") or [])
+            blocked_slots = form.get("blocked") or []
+            store.set_day(store.kst_today(), closed_all=closed_all, blocked=blocked_slots)
+            if closed_all:
+                return redirect("/admin", "오늘을 전체 휴강으로 설정했어요.")
+            if blocked_slots:
+                times = ", ".join(store.slot_info(s)["time"] for s in blocked_slots
+                                  if s in store.SLOT_BY_ID)
+                return redirect("/admin", f"{times} 타임을 휴강으로 막았어요.")
+            return redirect("/admin", "휴강 설정을 모두 풀었어요.")
 
-    return Response(page('<div class="card"><h2>페이지를 찾을 수 없습니다.</h2></div>',
-                         "404 · On점핑 출석"), 404)
+        if path == "/admin/notices":
+            if method == "POST":
+                body = form_value(form, "body")
+                if not body:
+                    return redirect("/admin/notices", "공지 내용을 입력해 주세요.", error=True)
+                store.set_notice(body, user["nickname"], store.kst_today())
+                return redirect("/admin/notices", "오늘의 공지를 저장했어요.")
+            return render_admin_notices(user, flash, flash_error)
+
+        match = re.fullmatch(r"/admin/notices/(\d+)", path)
+        if match and method == "POST":
+            body = form_value(form, "body")
+            if not body:
+                return redirect("/admin/notices", "공지 내용을 입력해 주세요.", error=True)
+            if not store.update_notice(int(match.group(1)), body):
+                return redirect("/admin/notices", "공지를 찾을 수 없습니다.", error=True)
+            return redirect("/admin/notices", "공지를 수정했어요.")
+
+        match = re.fullmatch(r"/admin/notices/(\d+)/delete", path)
+        if match and method == "POST":
+            if not store.delete_notice(int(match.group(1))):
+                return redirect("/admin/notices", "삭제할 공지가 없습니다.", error=True)
+            return redirect("/admin/notices", "공지를 삭제했어요.")
+
+        if path == "/admin/users":
+            if method == "POST":
+                username = form_value(form, "username").lower()
+                password = form_value(form, "password")
+                nickname = form_value(form, "nickname")
+                if not re.fullmatch(r"[a-z0-9_]{3,20}", username):
+                    return redirect("/admin/users", "아이디는 영문 소문자·숫자·밑줄 3~20자로 만들어 주세요.",
+                                    error=True)
+                if len(password) < 4:
+                    return redirect("/admin/users", "비밀번호는 4자 이상이어야 합니다.", error=True)
+                if store.username_taken(username):
+                    return redirect("/admin/users", "이미 존재하는 아이디입니다.", error=True)
+                store.create_user(username, password, nickname or username)
+                return redirect("/admin/users", f"{nickname or username} 회원을 만들었어요.")
+            return render_admin_users(user, flash, flash_error)
+
+        match = re.fullmatch(r"/admin/users/(\d+)/delete", path)
+        if match and method == "POST":
+            if not store.delete_user(int(match.group(1))):
+                return redirect("/admin/users", "삭제할 수 없는 계정입니다.", error=True)
+            return redirect("/admin/users", "회원을 삭제했어요.")
+
+    content = ('<div class="card"><h2>페이지를 찾을 수 없습니다.</h2>'
+               '<p class="small">주소를 확인해 주세요.</p>'
+               '<p class="small"><a href="/">출석 화면으로 →</a></p></div>')
+    return Response(page(content, title="404 · On점핑 출석", user=user, flash=flash), 404)
+
+
+def _error_page(exc: Exception) -> Response:
+    if isinstance(exc, store.StoreBusy):
+        message = "저장이 잠시 겹쳤어요. 잠시 뒤 다시 시도해 주세요."
+    elif isinstance(exc, store.StoreError):
+        message = "저장소에 연결하지 못했어요. 잠시 뒤 다시 시도해 주세요."
+    else:
+        message = "문제가 발생했습니다. 잠시 뒤 다시 시도해 주세요."
+    detail = f"{type(exc).__name__}: {exc}" if not isinstance(exc, store.StoreError) else ""
+    content = (f'<div class="card"><h2>😥 {esc(message)}</h2>'
+               + (f'<p class="small">{esc(detail)}</p>' if detail else "")
+               + '<p class="small"><a href="/">출석 화면으로 →</a></p></div>')
+    return Response(page(content, title="오류 · On점핑 출석"), 500)
 
 
 def app(environ, start_response):
@@ -746,19 +1020,20 @@ def app(environ, start_response):
     if len(path) > 1 and path.endswith("/"):
         path = path.rstrip("/")
 
-    store.init_db()
-    user = store.get_user(parse_session(environ))
-    flash = read_flash(environ)
-    form = read_form(environ) if method == "POST" else {}
-
+    store.begin_request()
     try:
-        resp = route(method, path, form, user, flash)
-    except Exception as exc:  # 서버리스에서 500 대신 안내 화면
-        resp = Response(page(f'<div class="card"><h2>문제가 발생했습니다.</h2>'
-                             f'<p class="small">{esc(type(exc).__name__)}: {esc(exc)}</p>'
-                             f'<div class="nav"><a class="button gray" href="/">메인으로</a></div></div>',
-                             "오류 · On점핑 출석"), 500)
+        store.init_db()
+        user = store.get_user(parse_session(environ))
+        flash, flash_error = read_flash(environ)
+        form = read_form(environ) if method == "POST" else {}
 
-    if flash and not resp.flash_set:
-        resp.clear_cookie(FLASH)
-    return resp(environ, start_response)
+        try:
+            resp = route(method, path, form, user, flash, flash_error)
+        except Exception as exc:  # 서버리스에서도 안내 화면을 보여 준다
+            resp = _error_page(exc)
+
+        if flash and not resp.flash_set:
+            resp.clear_cookie(FLASH)
+        return resp(environ, start_response)
+    finally:
+        store.end_request()

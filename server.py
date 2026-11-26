@@ -5,7 +5,8 @@
     python server.py --port 9000
 
 화면과 라우팅은 webapp.py 에 있고, 이 파일은 로컬 소켓만 연다. Vercel 은 같은
-webapp.app 을 api/index.py 로 감싸서 쓴다.
+webapp.app 을 api/index.py 로 감싸서 쓴다. 환경변수에 KV_REST_API_URL/TOKEN 이
+있으면 그 영구 저장소를, 없으면 프로젝트의 data/onjumping.db 를 쓴다.
 """
 
 from __future__ import annotations
@@ -38,7 +39,9 @@ def main() -> int:
     with make_server(args.host, args.port, webapp.app,
                      server_class=ThreadingWSGIServer, handler_class=Handler) as httpd:
         print(f"On점핑 출석: http://{args.host}:{args.port}")
-        print("관리자: admin / admin1234 · 회원: minjae / 1234")
+        print(f"저장소: {store.backend_name()}")
+        if not store.admin_password_configured():
+            print("관리자: ADMIN_PASSWORD 환경변수를 설정하세요 (미설정 시 임시 비밀번호가 위에 출력됩니다).")
         print("종료: Ctrl+C")
         try:
             httpd.serve_forever()

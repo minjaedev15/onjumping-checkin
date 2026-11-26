@@ -2,14 +2,15 @@
 
     python -m unittest discover tests -v
 
-임시 SQLite 파일을 쓰고, 로그인 → 폼 전송 → 리다이렉트 → 화면 확인 순서로
-실제 사용 흐름을 따라간다.
+임시 SQLite 파일을 쓰고, 로그인 → 폼 전송 → 리다이렉트 → 화면 확인 순서로 실제
+사용 흐름을 따라간다. 비밀번호는 코드에 두지 않고 실행할 때 환경변수로 만든다.
 """
 
 from __future__ import annotations
 
 import io
 import os
+import secrets
 import sys
 import tempfile
 import unittest
@@ -20,7 +21,18 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+# 테스트 전용 저장소·자격 증명 (코드에 평문으로 남기지 않는다)
+# ONJUMPING_TEST_REMOTE=1 이면 환경에 있는 원격 저장소(Upstash)로 같은 흐름을 확인한다.
+if not os.environ.get("ONJUMPING_TEST_REMOTE"):
+    for _name in ("KV_REST_API_URL", "KV_REST_API_TOKEN", "UPSTASH_REDIS_REST_URL",
+                  "UPSTASH_REDIS_REST_TOKEN", "ONJUMPING_REDIS_REST_URL", "ONJUMPING_REDIS_REST_TOKEN"):
+        os.environ.pop(_name, None)
 os.environ["ONJUMPING_DATA_DIR"] = tempfile.mkdtemp(prefix="onjumping-test-")
+os.environ.setdefault("SESSION_SECRET", secrets.token_hex(16))
+os.environ["ADMIN_PASSWORD"] = os.environ.get("ADMIN_PASSWORD") or secrets.token_urlsafe(12)
+
+ADMIN_PASSWORD = os.environ["ADMIN_PASSWORD"]
+MEMBER_PASSWORD = secrets.token_urlsafe(9)
 
 import store  # noqa: E402
 import webapp  # noqa: E402
@@ -68,28 +80,40 @@ class Client:
 
     def login(self, username: str, password: str):
         status, headers, _ = self.post("/login", {"username": username, "password": password})
-        assert status == 303 and headers.get("Location") == "/", (status, headers)
+        assert status == 303, (status, headers)
+        self.last_login_target = headers.get("Location")
         return self
+
+
+def flash_text(html: str) -> str:
+    marker = '<div class="message'
+    if marker not in html:
+        return ""
+    start = html.index(marker)
+    return html[start:html.index("</div>", start)]
 
 
 class AppTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         store.init_db()
+        store.create_user("minjae", MEMBER_PASSWORD, "민재")
+        store.create_user("doyun", MEMBER_PASSWORD, "도윤")
 
     def setUp(self):
-        self.admin = Client().login("admin", "admin1234")
-        self.member = Client().login("minjae", "1234")
-
-    def cleanup_day(self):
-        """테스트가 남긴 오늘 상태를 초기화한다."""
-        store.set_day(store.kst_today(), closed_all=False, blocked=[])
+        self.admin = Client().login("admin", ADMIN_PASSWORD)
+        self.member = Client().login("minjae", MEMBER_PASSWORD)
 
     def tearDown(self):
-        self.cleanup_day()
+        store.set_day(store.kst_today(), closed_all=False, blocked=[])
+        for notice in store.list_notices():
+            store.delete_notice(notice["id"])
+        store.set_notice(store.SEED_NOTICE, "관리자", store.kst_today())
+        for record in store.list_attendance(store.kst_today()):
+            store.cancel_checkin(record["id"])
 
     # ---------------- 로그인 / 접근 ---------------- #
-    def test_01_login_flow(self):
+    def test_01_login_flow_and_no_credential_hints(self):
         guest = Client()
         status, headers, _ = guest.get("/")
         self.assertEqual(status, 303)
@@ -98,23 +122,25 @@ class AppTest(unittest.TestCase):
         status, _, html = guest.get("/login")
         self.assertEqual(status, 200)
         self.assertIn("로그인", html)
-        self.assertIn("minjae", html)
+        # 비밀번호·테스트 계정 안내가 화면에 없어야 한다
+        self.assertNotIn("테스트 계정", html)
+        self.assertNotIn("비밀번호 힌트", html)
+        self.assertNotIn(MEMBER_PASSWORD, html)
+        self.assertNotIn('value="admin"', html)
 
         status, _, html = guest.post("/login", {"username": "admin", "password": "nope"})
         self.assertEqual(status, 200)
         self.assertIn("아이디 또는 비밀번호가 틀렸습니다.", html)
         self.assertEqual(guest.cookies, {})
 
-        status, headers, _ = guest.post("/login", {"username": "admin", "password": "admin1234"})
+        status, headers, _ = guest.post("/login", {"username": "admin", "password": ADMIN_PASSWORD})
         self.assertEqual(status, 303)
-        self.assertEqual(headers["Location"], "/")
+        self.assertEqual(headers["Location"], "/admin")
         self.assertIn("onjumping_uid", guest.cookies)
 
-        status, _, html = guest.get("/")
+        status, _, html = guest.get("/admin")
         self.assertEqual(status, 200)
-        self.assertIn("안녕하세요, 관리자님", html)
-        self.assertIn('href="/admin"', html)
-        self.assertIn("반가워요", html)
+        self.assertIn("출석·휴강", html)
 
         status, headers, _ = guest.get("/logout")
         self.assertEqual(status, 303)
@@ -130,38 +156,70 @@ class AppTest(unittest.TestCase):
         self.assertEqual(headers["Location"], "/login")
 
     def test_03_member_cannot_reach_admin(self):
-        status, headers, _ = self.member.get("/admin")
-        self.assertEqual(status, 303)
-        self.assertEqual(headers["Location"], "/")
+        for path in ("/admin", "/admin/notices", "/admin/users"):
+            status, headers, _ = self.member.get(path)
+            self.assertEqual(status, 303, path)
+            self.assertEqual(headers["Location"], "/", path)
         _, _, html = self.member.get("/")
         self.assertIn("관리자만 접근할 수 있어요.", html)
         self.assertNotIn('href="/admin"', html)
 
-        status, _, _ = self.member.post("/admin/users", {"username": "sneak", "password": "1234"})
+        status, _, _ = self.member.post("/admin/users", {"username": "sneak", "password": MEMBER_PASSWORD})
         self.assertEqual(status, 303)
         self.assertTrue(all(u["username"] != "sneak" for u in store.list_users()))
 
-    # ---------------- 메인 화면 ---------------- #
-    def test_04_main_layout(self):
-        status, _, html = self.member.get("/")
-        self.assertEqual(status, 200)
-        self.assertIn("안녕하세요, 민재님", html)
-        self.assertIn("년", html)
-        self.assertIn("08:30", html)
-        self.assertIn("09:30", html)
-        self.assertIn("18:30", html)
-        self.assertIn("19:40", html)
-        self.assertIn("/ 11명", html)
-        self.assertIn("📢 오늘의 공지", html)
-        self.assertIn("✅ 출석 체크", html)
-        self.assertIn("🗓️ 평일 자동 출석", html)
-        self.assertIn('name="mon"', html)
-        self.assertIn('name="fri"', html)
-        self.assertNotIn('name="sat"', html)
-        self.assertNotIn("대기", html)  # 대기열 기능은 제거됨
+        self.member.post("/admin/notices", {"body": "침입 공지"})
+        self.assertFalse(any(n["body"] == "침입 공지" for n in store.list_notices()))
+
+    # ---------------- 화면 분리 ---------------- #
+    def test_04_member_pages_are_split(self):
+        _, _, home = self.member.get("/")
+        self.assertIn("오늘 출석", home)
+        for time_label in ("08:30", "09:30", "18:30", "19:40"):
+            self.assertIn(time_label, home)
+        self.assertIn("/ 11", home)
+        self.assertNotIn("평일 자동 출석", home)      # /auto 로 분리
+        self.assertNotIn("회원 만들기", home)          # /admin/users 로 분리
+
+        _, _, notices = self.member.get("/notices")
+        self.assertIn("오늘의 공지", notices)
+        self.assertNotIn("출석하기", notices)
+
+        _, _, auto = self.member.get("/auto")
+        self.assertIn("평일 자동 출석", auto)
+        self.assertIn('name="mon"', auto)
+        self.assertIn('name="fri"', auto)
+        self.assertNotIn('name="sat"', auto)
+        self.assertIn("내 정보", auto)
+        self.assertNotIn("출석하기", auto)
+
+        # 내비게이션 탭
+        self.assertIn('href="/notices"', home)
+        self.assertIn('href="/auto"', home)
+
+    def test_05_admin_pages_are_split(self):
+        _, _, attendance = self.admin.get("/admin")
+        self.assertIn("휴강 제어", attendance)
+        self.assertIn("18:30", attendance)
+        self.assertNotIn("회원 만들기", attendance)
+        self.assertNotIn("공지 목록", attendance)
+
+        _, _, notices = self.admin.get("/admin/notices")
+        self.assertIn("오늘의 공지", notices)
+        self.assertIn("공지 목록", notices)
+        self.assertNotIn("휴강 제어", notices)
+
+        _, _, users = self.admin.get("/admin/users")
+        self.assertIn("회원 만들기", users)
+        self.assertIn("@minjae", users)
+        self.assertNotIn("휴강 제어", users)
+
+        _, _, home = self.admin.get("/")
+        for href in ('href="/admin"', 'href="/admin/notices"', 'href="/admin/users"'):
+            self.assertIn(href, home)
 
     # ---------------- 출석 ---------------- #
-    def test_05_checkin_and_cancel(self):
+    def test_06_checkin_and_cancel(self):
         day = store.kst_today()
         before = store.get_day(day)["slots"][2]["taken"]
 
@@ -172,27 +230,27 @@ class AppTest(unittest.TestCase):
 
         _, _, html = self.member.get("/")
         self.assertIn("18:30 출석 완료!", html)
-        self.assertIn("(출석함)", html)
+        self.assertIn("(나)", html)
+        self.assertIn("출석 취소", html)
 
-        # 같은 타임 중복
         self.member.post("/checkin", {"slot_id": "third"})
         _, _, html = self.member.get("/")
         self.assertIn("이미 18:30 타임에 출석했어요.", html)
 
         rows = [r for r in store.list_attendance(day) if r["username"] == "minjae"]
         self.assertEqual(len(rows), 1)
-        status, _, html = self.member.post(f"/checkin/cancel/{rows[0]['id']}")
+        status, _, _ = self.member.post(f"/checkin/cancel/{rows[0]['id']}")
         self.assertEqual(status, 303)
         _, _, html = self.member.get("/")
         self.assertIn("출석을 취소했어요.", html)
         self.assertEqual(store.get_day(day)["slots"][2]["taken"], before)
 
-    def test_06_cannot_cancel_someone_else(self):
+    def test_07_cannot_cancel_someone_else(self):
         day = store.kst_today()
         self.member.post("/checkin", {"slot_id": "first"})
         record = next(r for r in store.list_attendance(day) if r["username"] == "minjae")
 
-        other = Client().login("doyun", "1234")
+        other = Client().login("doyun", MEMBER_PASSWORD)
         other.post(f"/checkin/cancel/{record['id']}")
         _, _, html = other.get("/")
         self.assertIn("본인 출석만 취소할 수 있어요.", html)
@@ -201,14 +259,14 @@ class AppTest(unittest.TestCase):
         self.admin.post(f"/checkin/cancel/{record['id']}")
         self.assertEqual(store.list_attendance(day), [])
 
-    def test_07_full_slot_is_blocked(self):
+    def test_08_full_slot_is_blocked(self):
         day = store.kst_today()
-        made = [store.create_user(f"full{i}", "1234", f"가득{i}") for i in range(11)]
+        made = [store.create_user(f"full{i}", MEMBER_PASSWORD, f"가득{i}") for i in range(11)]
         try:
             for user in made:
                 store.check_in(user["id"], day, "fourth")
             _, _, html = self.member.get("/")
-            self.assertIn("(마감)", html)
+            self.assertIn("마감", html)
             self.member.post("/checkin", {"slot_id": "fourth"})
             _, _, html = self.member.get("/")
             self.assertIn("19:40 타임은 정원이 다 찼어요", html)
@@ -216,13 +274,13 @@ class AppTest(unittest.TestCase):
             for user in made:
                 store.delete_user(user["id"])
 
-    # ---------------- 휴강 / 타임 차단 ---------------- #
-    def test_08_holiday_blocks_checkin(self):
+    # ---------------- 휴강 ---------------- #
+    def test_09_holiday_blocks_checkin(self):
         status, _, _ = self.admin.post("/admin/day", {"closed_all": "1"})
         self.assertEqual(status, 303)
         _, _, html = self.member.get("/")
         self.assertIn("🚫 오늘은 전체 휴강입니다.", html)
-        self.assertIn("출석할 수 없습니다", html)
+        self.assertNotIn("출석하기", html)
 
         self.member.post("/checkin", {"slot_id": "third"})
         _, _, html = self.member.get("/")
@@ -233,14 +291,14 @@ class AppTest(unittest.TestCase):
         _, _, html = self.member.get("/")
         self.assertNotIn("🚫 오늘은 전체 휴강입니다.", html)
 
-    def test_09_slot_block_only_blocks_that_time(self):
+    def test_10_slot_block_only_blocks_that_time(self):
         status, _, _ = self.admin.post("/admin/day", {"blocked": ["first", "second"]})
         self.assertEqual(status, 303)
         state = store.get_day(store.kst_today())
         self.assertEqual(sorted(state["blocked"]), ["first", "second"])
 
         _, _, html = self.member.get("/")
-        self.assertIn("(휴강)", html)
+        self.assertIn("휴강", html)
 
         self.member.post("/checkin", {"slot_id": "first"})
         _, _, html = self.member.get("/")
@@ -251,43 +309,51 @@ class AppTest(unittest.TestCase):
         self.assertEqual(store.get_day(store.kst_today())["slots"][2]["taken"], 1)
 
     # ---------------- 공지 ---------------- #
-    def test_10_notice_register_and_delete(self):
-        status, _, _ = self.admin.post("/admin/notice", {"body": "오늘 21시에 예약 글이 올라옵니다."})
+    def test_11_notice_register_edit_delete(self):
+        status, _, _ = self.admin.post("/admin/notices", {"body": "오늘 21시에 예약 글이 올라옵니다."})
         self.assertEqual(status, 303)
-        _, _, html = self.member.get("/")
+        _, _, html = self.member.get("/notices")
         self.assertIn("오늘 21시에 예약 글이 올라옵니다.", html)
-
-        _, _, admin_html = self.admin.get("/admin")
-        self.assertIn("오늘 21시에 예약 글이 올라옵니다.", admin_html)
+        self.assertIn("오늘", html)
+        _, _, home = self.member.get("/")
+        self.assertIn("오늘 21시에 예약 글이 올라옵니다.", home)
 
         # 같은 날 다시 등록하면 내용만 바뀐다 (중복 카드 없음)
-        self.admin.post("/admin/notice", {"body": "수정된 공지"})
-        _, _, html = self.member.get("/")
+        self.admin.post("/admin/notices", {"body": "수정된 공지"})
+        _, _, html = self.member.get("/notices")
         self.assertEqual(html.count("📢 오늘의 공지"), 1)
         self.assertIn("수정된 공지", html)
 
-        self.admin.post("/admin/notice/delete")
-        _, _, html = self.member.get("/")
-        self.assertNotIn("📢 오늘의 공지", html)
+        # 목록에서 특정 공지 수정·삭제
+        today_notice = next(n for n in store.list_notices() if n["posted_on"] == store.kst_today())
+        self.admin.post(f"/admin/notices/{today_notice['id']}", {"body": "다시 고친 공지"})
+        self.assertIn("다시 고친 공지", [n["body"] for n in store.list_notices()])
 
-        self.admin.post("/admin/notice", {"body": ""})
-        _, _, admin_html = self.admin.get("/admin")
+        _, _, admin_html = self.admin.get("/admin/notices")
+        self.assertIn("다시 고친 공지", admin_html)
+
+        self.admin.post(f"/admin/notices/{today_notice['id']}/delete")
+        self.assertNotIn(today_notice["id"], [n["id"] for n in store.list_notices()])
+
+        self.admin.post("/admin/notices", {"body": "  "})
+        _, _, admin_html = self.admin.get("/admin/notices")
         self.assertIn("공지 내용을 입력해 주세요.", admin_html)
 
     # ---------------- 회원 관리 ---------------- #
-    def test_11_admin_user_crud(self):
+    def test_12_admin_user_crud(self):
         status, _, _ = self.admin.post("/admin/users", {
-            "username": "friend", "password": "1234", "nickname": "친구",
+            "username": "friend", "password": MEMBER_PASSWORD, "nickname": "친구",
         })
         self.assertEqual(status, 303)
-        _, _, admin_html = self.admin.get("/admin")
+        _, _, admin_html = self.admin.get("/admin/users")
         self.assertIn("친구", admin_html)
         self.assertIn("@friend", admin_html)
         self.assertIn("👑 관리자", admin_html)
 
-        friend = Client().login("friend", "1234")
+        friend = Client().login("friend", MEMBER_PASSWORD)
+        self.assertEqual(friend.last_login_target, "/")
         _, _, html = friend.get("/")
-        self.assertIn("안녕하세요, 친구님", html)
+        self.assertIn("오늘 출석", html)
 
         created = next(u for u in store.list_users() if u["username"] == "friend")
         self.admin.post(f"/admin/users/{created['id']}/delete")
@@ -298,46 +364,57 @@ class AppTest(unittest.TestCase):
         self.admin.post(f"/admin/users/{admin_user['id']}/delete")
         self.assertTrue(store.get_user(admin_user["id"])["is_admin"])
 
-        # 중복 아이디 / 짧은 비밀번호는 거부
-        self.admin.post("/admin/users", {"username": "minjae", "password": "1234"})
+        # 중복 아이디 / 짧은 비밀번호 / 잘못된 아이디는 거부
+        self.admin.post("/admin/users", {"username": "minjae", "password": MEMBER_PASSWORD})
         self.admin.post("/admin/users", {"username": "shorty", "password": "12"})
-        self.assertTrue(all(u["username"] != "shorty" for u in store.list_users()))
+        self.admin.post("/admin/users", {"username": "한글", "password": MEMBER_PASSWORD})
+        self.assertTrue(all(u["username"] not in ("shorty", "한글") for u in store.list_users()))
 
     # ---------------- 내 설정 ---------------- #
-    def test_12_nickname_and_weekly(self):
+    def test_13_nickname_and_weekly(self):
         status, _, _ = self.member.post("/profile", {"nickname": "민재짱"})
         self.assertEqual(status, 303)
-        _, _, html = self.member.get("/")
-        self.assertIn("안녕하세요, 민재짱님", html)
+        _, _, html = self.member.get("/auto")
+        self.assertIn("민재짱", html)
 
-        self.member.post("/weekly", {"mon": "first", "tue": "third", "wed": "fourth", "thu": "", "fri": ""})
-        user = store.authenticate("minjae", "1234")
+        self.member.post("/auto", {"mon": "first", "tue": "third", "wed": "fourth", "thu": "", "fri": ""})
+        user = store.authenticate("minjae", MEMBER_PASSWORD)
         self.assertEqual(user["weekly"], {"mon": "first", "tue": "third", "wed": "fourth",
                                           "thu": None, "fri": None})
         _, _, html = self.member.get("/")
-        self.assertIn("내 설정: 월 08:30 · 화 18:30 · 수 19:40 · 목 쉼 · 금 쉼", html)
+        self.assertIn("월 08:30 · 화 18:30 · 수 19:40 · 목 쉼 · 금 쉼", html)
 
         # 빈 닉네임은 거부
         self.member.post("/profile", {"nickname": "   "})
-        _, _, html = self.member.get("/")
+        _, _, html = self.member.get("/auto")
         self.assertIn("닉네임을 입력해 주세요.", html)
-        self.assertIn("안녕하세요, 민재짱님", html)
+        self.assertIn("민재짱", html)
+        self.member.post("/profile", {"nickname": "민재"})
 
     # ---------------- 기타 ---------------- #
-    def test_13_health_and_404(self):
+    def test_14_health_and_404(self):
         status, _, body = self.member.get("/health")
         self.assertEqual(status, 200)
         self.assertEqual(body, "OK")
         status, _, html = self.member.get("/nope")
         self.assertEqual(status, 404)
         self.assertIn("페이지를 찾을 수 없습니다", html)
+        status, _, html = self.admin.get("/admin/nope")
+        self.assertEqual(status, 404)
 
-    def test_14_passwords_are_hashed(self):
-        with store.connect() as conn:
-            rows = conn.execute("SELECT username, password_hash FROM users").fetchall()
-        for row in rows:
-            self.assertTrue(row["password_hash"].startswith("pbkdf2:sha256:"), row["username"])
-            self.assertNotIn("admin1234", row["password_hash"])
+    def test_15_no_passwords_in_store_or_pages(self):
+        raw = store._backend().load_raw() or ""
+        self.assertTrue(raw)
+        self.assertNotIn(ADMIN_PASSWORD, raw)
+        self.assertNotIn(MEMBER_PASSWORD, raw)
+        self.assertIn("pbkdf2:sha256:", raw)
+
+        pages = [self.member.get(p)[2] for p in ("/", "/notices", "/auto")]
+        pages += [self.admin.get(p)[2] for p in ("/admin", "/admin/notices", "/admin/users")]
+        pages.append(Client().get("/login")[2])
+        for html in pages:
+            self.assertNotIn(ADMIN_PASSWORD, html)
+            self.assertNotIn(MEMBER_PASSWORD, html)
 
 
 if __name__ == "__main__":

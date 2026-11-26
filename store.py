@@ -1,15 +1,31 @@
-"""SQLite 데이터 계층.
+"""온점핑 출석 데이터 계층.
 
-테이블
-    users        아이디·비밀번호 해시·닉네임·관리자 여부·요일별 타임
-    attendance   날짜별 출석 기록 (사람 × 날짜 × 타임 하나)
-    notices      "오늘의 공지" (하루 한 건)
-    day_controls 날짜별 "전체 휴강"
-    slot_blocks  날짜별 타임 차단 (부분 휴강)
-    settings     서명 쿠키용 비밀키 같은 앱 설정
+저장소는 두 가지이고, 위의 앱 로직은 어느 쪽에서도 똑같이 동작한다.
 
-로컬은 프로젝트의 data/onjumping.db, Vercel 같은 읽기 전용 파일시스템에서는
-ONJUMPING_DATA_DIR(/tmp) 아래에 만든다.
+    프로덕션  Upstash Redis REST (Vercel Storage)
+              KV_REST_API_URL / KV_REST_API_TOKEN
+              (UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN 도 인식)
+    로컬      SQLite (data/onjumping.db)
+
+두 저장소 모두 앱 상태 전체를 하나의 JSON 문서로 보관한다. 문서를 읽은 뒤 원문
+문자열을 조건으로 걸어 저장(CAS)하므로, 두 요청이 동시에 같은 문서를 고쳐도
+한쪽만 반영되고 다른 쪽은 최신 문서를 다시 읽어 같은 변경을 다시 적용한다.
+
+문서 구조
+
+    schema         문서 형식 버전
+    revision       저장할 때마다 1씩 증가
+    seq            users / attendance / notices 의 다음 id
+    users          [{id, username, password_hash, nickname, is_admin, weekly, created_at}]
+    attendance     [{id, user_id, day, slot_id, created_at}]
+    notices        [{id, body, posted_on, author, created_at, updated_at}]
+    day_controls   {day: {closed_all, note, updated_at}}
+    slot_blocks    {day: [slot_id, ...]}
+    settings       {secret: ...}  (SESSION_SECRET 환경변수가 없을 때만)
+
+관리자 계정의 비밀번호는 문서에 저장하지 않는다. `admin` 로그인은 서버 환경변수
+ADMIN_PASSWORD(또는 ADMIN_PASSWORD_HASH)로만 검증되고, 저장소에는 관리자 계정의
+존재(명단·출석 기록용)만 남는다.
 """
 
 from __future__ import annotations
@@ -20,6 +36,11 @@ import json
 import os
 import secrets
 import sqlite3
+import sys
+import threading
+import time
+import urllib.error
+import urllib.request
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -46,86 +67,32 @@ DEFAULT_SLOT_ID = "third"
 
 DEFAULT_WEEKLY = {"mon": "third", "tue": "third", "wed": "third", "thu": "third", "fri": "third"}
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS users (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    username      TEXT    NOT NULL UNIQUE,
-    password_hash TEXT    NOT NULL,
-    nickname      TEXT    NOT NULL DEFAULT '',
-    is_admin      INTEGER NOT NULL DEFAULT 0,
-    weekly        TEXT    NOT NULL DEFAULT '',
-    created_at    TEXT    NOT NULL
-);
+SCHEMA_VERSION = 2
+STATE_KEY = os.environ.get("ONJUMPING_STATE_KEY") or "onjumping:state:v1"
 
-CREATE TABLE IF NOT EXISTS attendance (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    day        TEXT    NOT NULL,
-    slot_id    TEXT    NOT NULL,
-    note       TEXT    NOT NULL DEFAULT '',
-    created_at TEXT    NOT NULL,
-    UNIQUE (user_id, day, slot_id)
-);
+ADMIN_USERNAME = "admin"
+ADMIN_NICKNAME = "관리자"
+ENV_PASSWORD_MARK = "!env"  # 이 값이면 비밀번호는 환경변수로만 검증한다.
 
-CREATE TABLE IF NOT EXISTS notices (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    body       TEXT    NOT NULL,
-    posted_on  TEXT    NOT NULL,
-    author     TEXT    NOT NULL,
-    created_at TEXT    NOT NULL,
-    updated_at TEXT    NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS day_controls (
-    day        TEXT PRIMARY KEY,
-    closed_all INTEGER NOT NULL DEFAULT 0,
-    note       TEXT    NOT NULL DEFAULT '',
-    updated_at TEXT    NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS slot_blocks (
-    day     TEXT NOT NULL,
-    slot_id TEXT NOT NULL,
-    PRIMARY KEY (day, slot_id)
-);
-
-CREATE TABLE IF NOT EXISTS settings (
-    key   TEXT PRIMARY KEY,
-    value TEXT NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_attendance_day ON attendance(day, slot_id);
-CREATE INDEX IF NOT EXISTS idx_attendance_user ON attendance(user_id, day);
-CREATE INDEX IF NOT EXISTS idx_notices_posted ON notices(posted_on DESC, id DESC);
-"""
-
-# 첫 실행 시 들어가는 계정. 비밀번호는 저장할 때 해시한다.
-SEED_USERS = [
-    ("admin", "admin1234", "관리자", 1),
-    ("minjae", "1234", "민재", 0),
-    ("doyun", "1234", "도윤", 0),
-]
 SEED_NOTICE = "온점핑 출석 앱이 새로워졌어요.\n타임은 08:30 · 09:30 · 18:30 · 19:40, 타임마다 11명 선착순입니다."
 
+REDIS_URL_VARS = ("KV_REST_API_URL", "UPSTASH_REDIS_REST_URL", "ONJUMPING_REDIS_REST_URL")
+REDIS_TOKEN_VARS = ("KV_REST_API_TOKEN", "UPSTASH_REDIS_REST_TOKEN", "ONJUMPING_REDIS_REST_TOKEN")
 
-# --------------------------------------------------------------------------- #
-# 연결
-# --------------------------------------------------------------------------- #
 
-@contextmanager
-def connect():
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH, timeout=10)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    try:
-        yield conn
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
+class StoreError(Exception):
+    """저장소를 쓸 수 없을 때."""
+
+
+class StoreBusy(StoreError):
+    """같은 문서를 동시에 고쳐 몇 번 다시 시도해도 반영하지 못했을 때."""
+
+
+class CheckinError(Exception):
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+        self.message = message
 
 
 def _now() -> str:
@@ -137,7 +104,223 @@ def kst_today() -> str:
 
 
 # --------------------------------------------------------------------------- #
-# 비밀번호 / 쿠키 서명
+# 저장소 백엔드
+# --------------------------------------------------------------------------- #
+
+class _SqliteBackend:
+    """로컬 개발·테스트용. 한 행짜리 state 테이블에 JSON 을 넣는다."""
+
+    name = "sqlite"
+
+    def __init__(self, path: Path):
+        self.path = path
+
+    @contextmanager
+    def _connect(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(self.path, timeout=15, isolation_level=None)
+        try:
+            conn.execute("CREATE TABLE IF NOT EXISTS state (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+            yield conn
+        finally:
+            conn.close()
+
+    def load_raw(self) -> str | None:
+        with self._connect() as conn:
+            row = conn.execute("SELECT value FROM state WHERE key = ?", (STATE_KEY,)).fetchone()
+        return row[0] if row else None
+
+    def save_raw(self, old: str | None, new: str) -> bool:
+        """old 와 지금 저장된 값이 같을 때만 new 로 바꾼다."""
+        with self._connect() as conn:
+            if old is None:
+                cur = conn.execute("INSERT OR IGNORE INTO state (key, value) VALUES (?, ?)", (STATE_KEY, new))
+            else:
+                cur = conn.execute(
+                    "UPDATE state SET value = ? WHERE key = ? AND value = ?", (new, STATE_KEY, old)
+                )
+            return cur.rowcount > 0
+
+
+CAS_SCRIPT = """
+local cur = redis.call('GET', KEYS[1])
+local old = ARGV[1]
+if not cur then
+  if old ~= '' then return 0 end
+else
+  if cur ~= old then return 0 end
+end
+redis.call('SET', KEYS[1], ARGV[2])
+return 1
+"""
+
+
+class _RedisBackend:
+    """Upstash Redis REST. 표준 라이브러리(urllib)만 쓴다."""
+
+    name = "redis"
+
+    def __init__(self, url: str, token: str):
+        self.url = url.rstrip("/")
+        self.token = token
+
+    def _command(self, *args):
+        body = json.dumps(list(args), ensure_ascii=False).encode("utf-8")
+        request = urllib.request.Request(
+            self.url,
+            data=body,
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {self.token}",
+                "Content-Type": "application/json",
+            },
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=8) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            raise StoreError(f"저장소에 연결하지 못했습니다: {exc}") from exc
+        except ValueError as exc:
+            raise StoreError("저장소 응답을 읽지 못했습니다.") from exc
+        if isinstance(payload, dict) and payload.get("error"):
+            raise StoreError(f"저장소 오류: {payload['error']}")
+        return payload.get("result") if isinstance(payload, dict) else None
+
+    def load_raw(self) -> str | None:
+        value = self._command("GET", STATE_KEY)
+        return value if isinstance(value, str) else None
+
+    def save_raw(self, old: str | None, new: str) -> bool:
+        result = self._command("EVAL", CAS_SCRIPT, "1", STATE_KEY, old or "", new)
+        return result == 1
+
+
+_BACKENDS: dict[tuple, object] = {}
+
+
+def _env(*names: str) -> str:
+    for name in names:
+        value = (os.environ.get(name) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _backend():
+    url = _env(*REDIS_URL_VARS)
+    token = _env(*REDIS_TOKEN_VARS)
+    if url and token:
+        key = ("redis", url, token)
+        if key not in _BACKENDS:
+            _BACKENDS[key] = _RedisBackend(url, token)
+        return _BACKENDS[key]
+    if url or token:
+        raise StoreError("영구 저장소 설정이 일부만 있습니다(KV_REST_API_URL / KV_REST_API_TOKEN).")
+    key = ("sqlite", str(DB_PATH))
+    if key not in _BACKENDS:
+        _BACKENDS[key] = _SqliteBackend(DB_PATH)
+    return _BACKENDS[key]
+
+
+def backend_name() -> str:
+    return _backend().name
+
+
+def reset_cache() -> None:
+    """저장소 종류나 설정이 바뀌었을 때(주로 테스트) 캐시를 비운다."""
+    _BACKENDS.clear()
+    begin_request()
+    end_request()
+
+
+# --------------------------------------------------------------------------- #
+# 요청 단위 캐시
+# --------------------------------------------------------------------------- #
+
+_CACHE = threading.local()
+
+
+def begin_request() -> None:
+    _CACHE.active = True
+    _CACHE.loaded = False
+    _CACHE.raw = None
+
+
+def end_request() -> None:
+    _CACHE.active = False
+    _CACHE.loaded = False
+    _CACHE.raw = None
+
+
+def _load_raw(fresh: bool = False) -> str | None:
+    active = getattr(_CACHE, "active", False)
+    if active and not fresh and getattr(_CACHE, "loaded", False):
+        return _CACHE.raw
+    raw = _backend().load_raw()
+    if active:
+        _CACHE.raw, _CACHE.loaded = raw, True
+    return raw
+
+
+def _remember(raw: str | None, new: str) -> None:
+    if getattr(_CACHE, "active", False):
+        _CACHE.raw, _CACHE.loaded = new, True
+
+
+def _blank_state() -> dict:
+    return {
+        "schema": SCHEMA_VERSION,
+        "revision": 0,
+        "seq": {"user": 1, "attendance": 1, "notice": 1},
+        "users": [],
+        "attendance": [],
+        "notices": [],
+        "day_controls": {},
+        "slot_blocks": {},
+        "settings": {},
+    }
+
+
+def _decode(raw: str | None) -> dict:
+    if not raw:
+        return _blank_state()
+    try:
+        doc = json.loads(raw)
+    except ValueError:
+        doc = _blank_state()
+    if not isinstance(doc, dict):
+        doc = _blank_state()
+    for key, value in _blank_state().items():
+        doc.setdefault(key, value)
+    return doc
+
+
+def _read(fn):
+    """fn(doc) -> 값 또는 (값, 바뀌었는지). 읽기 전용이라 뒤쪽은 버린다."""
+    result = fn(_decode(_load_raw()))
+    return result[0] if isinstance(result, tuple) else result
+
+
+def _mutate(fn):
+    """fn(doc) -> (결과, 바뀌었는지). 저장이 겹치면 최신 문서로 다시 적용한다."""
+    backend = _backend()
+    for attempt in range(6):
+        raw = _load_raw(fresh=attempt > 0)
+        doc = _decode(raw)
+        result, changed = fn(doc)
+        if not changed:
+            return result
+        doc["revision"] = int(doc.get("revision") or 0) + 1
+        new = json.dumps(doc, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+        if backend.save_raw(raw, new):
+            _remember(raw, new)
+            return result
+        time.sleep(0.03 + 0.04 * attempt)
+    raise StoreBusy("저장이 잠시 겹쳤어요. 다시 시도해 주세요.")
+
+
+# --------------------------------------------------------------------------- #
+# 비밀번호 / 세션 키
 # --------------------------------------------------------------------------- #
 
 PBKDF2_ITERATIONS = 200_000
@@ -160,179 +343,370 @@ def check_password(password_hash: str, password: str) -> bool:
 
 
 def get_secret() -> str:
-    """세션 쿠키 서명 키. DB 에 한 번 만들어 두고 계속 쓴다."""
-    with connect() as conn:
-        row = conn.execute("SELECT value FROM settings WHERE key = 'secret'").fetchone()
-        if row:
-            return row["value"]
-        conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('secret', ?)", (secrets.token_hex(32),))
-        row = conn.execute("SELECT value FROM settings WHERE key = 'secret'").fetchone()
-    return row["value"]
+    """세션 쿠키 서명 키. SESSION_SECRET 이 있으면 그것을 쓴다."""
+    env_secret = _env("SESSION_SECRET")
+    if env_secret:
+        return env_secret
+
+    def fn(doc):
+        stored = doc["settings"].get("secret")
+        if stored:
+            return stored, False
+        created = secrets.token_hex(32)
+        doc["settings"]["secret"] = created
+        return created, True
+
+    return _mutate(fn)
 
 
 # --------------------------------------------------------------------------- #
-# 초기화
+# 관리자 계정 (비밀번호는 환경변수에서만)
 # --------------------------------------------------------------------------- #
+
+def admin_password_configured() -> bool:
+    return bool(_env("ADMIN_PASSWORD") or _env("ADMIN_PASSWORD_HASH"))
+
+
+def _admin_password_ok(password: str) -> bool:
+    password_hash = _env("ADMIN_PASSWORD_HASH")
+    if password_hash:
+        return check_password(password_hash, password)
+    configured = _env("ADMIN_PASSWORD")
+    if not configured:
+        return False
+    return hmac.compare_digest(configured.encode("utf-8"), (password or "").encode("utf-8"))
+
+
+def _find_user(doc: dict, user_id: int | None) -> dict | None:
+    if not user_id:
+        return None
+    return next((u for u in doc["users"] if u.get("id") == user_id), None)
+
+
+def _find_username(doc: dict, username: str) -> dict | None:
+    return next((u for u in doc["users"] if u.get("username") == username), None)
+
+
+def _public(user: dict) -> dict:
+    weekly = user.get("weekly") or {}
+    return {
+        "id": user["id"],
+        "username": user["username"],
+        "nickname": user.get("nickname") or user["username"],
+        "is_admin": bool(user.get("is_admin")),
+        "weekly": {d: (weekly.get(d) if weekly.get(d) in SLOT_BY_ID else None) for d in WEEKDAY_KEYS},
+        "created_at": user.get("created_at", ""),
+    }
+
+
+def _next_id(doc: dict, name: str) -> int:
+    value = int((doc.get("seq") or {}).get(name) or 1)
+    doc["seq"][name] = value + 1
+    return value
+
+
+def _add_user(doc: dict, username: str, password_hash: str, nickname: str = "", is_admin: bool = False) -> dict:
+    user = {
+        "id": _next_id(doc, "user"),
+        "username": username,
+        "password_hash": password_hash,
+        "nickname": nickname or username,
+        "is_admin": bool(is_admin),
+        "weekly": dict(DEFAULT_WEEKLY),
+        "created_at": _now(),
+    }
+    doc["users"].append(user)
+    return user
+
+
+def _ensure_admin(doc: dict) -> bool:
+    """관리자 계정 행을 준비한다. 비밀번호는 환경변수에만 둔다."""
+    changed = False
+    user = _find_username(doc, ADMIN_USERNAME)
+    if user is None:
+        if admin_password_configured():
+            password_hash = ENV_PASSWORD_MARK
+        else:
+            # 로컬 개발: 한 번만 임시 비밀번호를 만들어 알려 준다. 코드에는 남기지 않는다.
+            temporary = secrets.token_urlsafe(9)
+            password_hash = hash_password(temporary)
+            if not os.environ.get("VERCEL"):
+                print(
+                    f"[onjumping] ADMIN_PASSWORD 가 없어 관리자 임시 비밀번호를 만들었습니다: "
+                    f"{ADMIN_USERNAME} / {temporary}",
+                    file=sys.stderr,
+                )
+        _add_user(doc, ADMIN_USERNAME, password_hash, ADMIN_NICKNAME, is_admin=True)
+        return True
+
+    if not user.get("is_admin"):
+        user["is_admin"] = True
+        changed = True
+    if user.get("nickname") != ADMIN_NICKNAME:
+        user["nickname"] = ADMIN_NICKNAME
+        changed = True
+    if admin_password_configured() and user.get("password_hash") != ENV_PASSWORD_MARK:
+        user["password_hash"] = ENV_PASSWORD_MARK
+        changed = True
+    if not admin_password_configured() and user.get("password_hash") == ENV_PASSWORD_MARK:
+        temporary = secrets.token_urlsafe(9)
+        user["password_hash"] = hash_password(temporary)
+        changed = True
+        if not os.environ.get("VERCEL"):
+            print(
+                f"[onjumping] ADMIN_PASSWORD 가 없어 관리자 임시 비밀번호를 다시 만들었습니다: "
+                f"{ADMIN_USERNAME} / {temporary}",
+                file=sys.stderr,
+            )
+    return changed
+
+
+def _ensure_notice(doc: dict) -> bool:
+    if doc["notices"] or not SEED_NOTICE:
+        return False
+    now = _now()
+    doc["notices"].append({
+        "id": _next_id(doc, "notice"),
+        "body": SEED_NOTICE,
+        "posted_on": kst_today(),
+        "author": ADMIN_NICKNAME,
+        "created_at": now,
+        "updated_at": now,
+    })
+    return True
+
 
 def init_db(seed: bool = True) -> None:
-    with connect() as conn:
-        conn.executescript(SCHEMA)
-        count = conn.execute("SELECT COUNT(*) AS n FROM users").fetchone()["n"]
-        if seed and count == 0:
-            for username, password, nickname, is_admin in SEED_USERS:
-                conn.execute(
-                    "INSERT INTO users (username, password_hash, nickname, is_admin, weekly, created_at)"
-                    " VALUES (?, ?, ?, ?, ?, ?)",
-                    (username, hash_password(password), nickname, is_admin,
-                     json.dumps(DEFAULT_WEEKLY), _now()),
-                )
-            today = kst_today()
-            conn.execute(
-                "INSERT INTO notices (body, posted_on, author, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-                (SEED_NOTICE, today, "관리자", _now(), _now()),
-            )
+    def fn(doc):
+        changed = False
+        if doc.get("schema") != SCHEMA_VERSION:
+            doc["schema"] = SCHEMA_VERSION
+            changed = True
+        if seed:
+            if _ensure_admin(doc):
+                changed = True
+            if _ensure_notice(doc):
+                changed = True
+        return None, changed
+
+    _mutate(fn)
 
 
 # --------------------------------------------------------------------------- #
 # users
 # --------------------------------------------------------------------------- #
 
-def _user_row(row: sqlite3.Row) -> dict:
-    weekly = json.loads(row["weekly"]) if row["weekly"] else {}
-    return {
-        "id": row["id"],
-        "username": row["username"],
-        "nickname": row["nickname"] or row["username"],
-        "is_admin": bool(row["is_admin"]),
-        "weekly": {d: (weekly.get(d) if weekly.get(d) in SLOT_BY_ID and d in WEEKDAY_KEYS else None)
-                   for d in WEEKDAY_KEYS},
-        "created_at": row["created_at"],
-    }
-
-
 def list_users() -> list[dict]:
-    with connect() as conn:
-        rows = conn.execute("SELECT * FROM users ORDER BY is_admin DESC, username").fetchall()
-    return [_user_row(r) for r in rows]
+    return _read(lambda doc: [_public(u) for u in
+                              sorted(doc["users"], key=lambda u: (not u.get("is_admin"), u.get("username", "")))])
 
 
 def get_user(user_id: int | None) -> dict | None:
-    if not user_id:
-        return None
-    with connect() as conn:
-        row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
-    return _user_row(row) if row else None
+    user = _read(lambda doc: _find_user(doc, user_id))
+    return _public(user) if user else None
 
 
 def authenticate(username: str, password: str) -> dict | None:
     username = (username or "").strip().lower()
     if not username or not password:
         return None
-    with connect() as conn:
-        row = conn.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
-    if row is None or not check_password(row["password_hash"], password):
-        return None
-    return _user_row(row)
+
+    if username == ADMIN_USERNAME:
+        if not _admin_password_ok(password):
+            return None
+        return _admin_login_user()
+
+    def fn(doc):
+        user = _find_username(doc, username)
+        if user is None or user.get("password_hash") == ENV_PASSWORD_MARK:
+            return None, False
+        if not check_password(user.get("password_hash", ""), password):
+            return None, False
+        return _public(user), False
+
+    return _read(fn)
+
+
+def _admin_login_user() -> dict | None:
+    def fn(doc):
+        user = _find_username(doc, ADMIN_USERNAME)
+        if user is None:
+            _ensure_admin(doc)
+            user = _find_username(doc, ADMIN_USERNAME)
+            return (_public(user) if user else None), True
+        return _public(user), False
+
+    return _mutate(fn)
 
 
 def username_taken(username: str) -> bool:
-    with connect() as conn:
-        row = conn.execute("SELECT 1 FROM users WHERE username = ?", ((username or "").strip().lower(),)).fetchone()
-    return row is not None
+    username = (username or "").strip().lower()
+    return _read(lambda doc: _find_username(doc, username) is not None)
 
 
 def create_user(username: str, password: str, nickname: str = "", is_admin: bool = False) -> dict:
     username = (username or "").strip().lower()
-    with connect() as conn:
-        cur = conn.execute(
-            "INSERT INTO users (username, password_hash, nickname, is_admin, weekly, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?)",
-            (username, hash_password(password), (nickname or "").strip()[:20], 1 if is_admin else 0,
-             json.dumps(DEFAULT_WEEKLY), _now()),
-        )
-        row = conn.execute("SELECT * FROM users WHERE id = ?", (cur.lastrowid,)).fetchone()
-    return _user_row(row)
+
+    def fn(doc):
+        if _find_username(doc, username) is not None:
+            raise CheckinError("duplicate_user", "이미 존재하는 아이디입니다.")
+        user = _add_user(doc, username, hash_password(password), (nickname or "").strip()[:20], is_admin)
+        return _public(user), True
+
+    return _mutate(fn)
 
 
 def set_nickname(user_id: int, nickname: str) -> dict | None:
     nickname = (nickname or "").strip()[:20]
     if not nickname:
         return get_user(user_id)
-    with connect() as conn:
-        conn.execute("UPDATE users SET nickname = ? WHERE id = ?", (nickname, user_id))
-    return get_user(user_id)
+
+    def fn(doc):
+        user = _find_user(doc, user_id)
+        if user is None:
+            return None, False
+        user["nickname"] = nickname
+        return _public(user), True
+
+    return _mutate(fn)
 
 
 def set_weekly(user_id: int, weekly: dict) -> dict | None:
     clean = {d: (weekly.get(d) if weekly.get(d) in SLOT_BY_ID else None) for d in WEEKDAY_KEYS}
-    with connect() as conn:
-        conn.execute("UPDATE users SET weekly = ? WHERE id = ?", (json.dumps(clean), user_id))
-    return get_user(user_id)
+
+    def fn(doc):
+        user = _find_user(doc, user_id)
+        if user is None:
+            return None, False
+        user["weekly"] = clean
+        return _public(user), True
+
+    return _mutate(fn)
 
 
 def delete_user(user_id: int) -> bool:
-    with connect() as conn:
-        cur = conn.execute("DELETE FROM users WHERE id = ? AND is_admin = 0", (user_id,))
-    return cur.rowcount > 0
+    def fn(doc):
+        user = _find_user(doc, user_id)
+        if user is None or user.get("is_admin"):
+            return False, False
+        doc["users"] = [u for u in doc["users"] if u["id"] != user_id]
+        doc["attendance"] = [a for a in doc["attendance"] if a.get("user_id") != user_id]
+        return True, True
+
+    return _mutate(fn)
 
 
 # --------------------------------------------------------------------------- #
-# notices (오늘의 공지 — 하루 한 건)
+# notices
 # --------------------------------------------------------------------------- #
 
-def _notice_row(row: sqlite3.Row) -> dict:
-    return {"id": row["id"], "body": row["body"], "posted_on": row["posted_on"],
-            "author": row["author"], "updated_at": row["updated_at"]}
+def _notice_public(notice: dict) -> dict:
+    return {
+        "id": notice["id"],
+        "body": notice["body"],
+        "posted_on": notice.get("posted_on", ""),
+        "author": notice.get("author", ""),
+        "updated_at": notice.get("updated_at", ""),
+    }
 
 
 def latest_notice(today: str | None = None) -> dict | None:
     today = today or kst_today()
-    with connect() as conn:
-        row = conn.execute(
-            "SELECT * FROM notices WHERE posted_on <= ? ORDER BY posted_on DESC, id DESC LIMIT 1", (today,)
-        ).fetchone()
-    return _notice_row(row) if row else None
+
+    def fn(doc):
+        found = [n for n in doc["notices"] if n.get("posted_on", "") <= today]
+        if not found:
+            return None, False
+        latest = max(found, key=lambda n: (n.get("posted_on", ""), n.get("id", 0)))
+        return _notice_public(latest), False
+
+    return _read(fn)
+
+
+def list_notices() -> list[dict]:
+    def fn(doc):
+        ordered = sorted(doc["notices"], key=lambda n: (n.get("posted_on", ""), n.get("id", 0)), reverse=True)
+        return [_notice_public(n) for n in ordered], False
+
+    return _read(fn)
+
+
+def get_notice(notice_id: int) -> dict | None:
+    def fn(doc):
+        found = next((n for n in doc["notices"] if n.get("id") == notice_id), None)
+        return (_notice_public(found) if found else None), False
+
+    return _read(fn)
 
 
 def set_notice(body: str, author: str, posted_on: str | None = None) -> dict:
     """오늘 공지를 등록한다. 같은 날짜 공지가 이미 있으면 내용만 바꾼다."""
     posted_on = posted_on or kst_today()
     body = body.strip()
-    with connect() as conn:
-        row = conn.execute("SELECT * FROM notices WHERE posted_on = ? ORDER BY id DESC LIMIT 1",
-                           (posted_on,)).fetchone()
-        if row:
-            conn.execute("UPDATE notices SET body = ?, author = ?, updated_at = ? WHERE id = ?",
-                         (body, author, _now(), row["id"]))
-            notice_id = row["id"]
-        else:
-            cur = conn.execute(
-                "INSERT INTO notices (body, posted_on, author, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-                (body, posted_on, author, _now(), _now()),
-            )
-            notice_id = cur.lastrowid
-        row = conn.execute("SELECT * FROM notices WHERE id = ?", (notice_id,)).fetchone()
-    return _notice_row(row)
+
+    def fn(doc):
+        same_day = [n for n in doc["notices"] if n.get("posted_on") == posted_on]
+        now = _now()
+        if same_day:
+            notice = max(same_day, key=lambda n: n.get("id", 0))
+            notice["body"] = body
+            notice["author"] = author
+            notice["updated_at"] = now
+            return _notice_public(notice), True
+        notice = {
+            "id": _next_id(doc, "notice"),
+            "body": body,
+            "posted_on": posted_on,
+            "author": author,
+            "created_at": now,
+            "updated_at": now,
+        }
+        doc["notices"].append(notice)
+        return _notice_public(notice), True
+
+    return _mutate(fn)
+
+
+def update_notice(notice_id: int, body: str) -> dict | None:
+    body = (body or "").strip()
+
+    def fn(doc):
+        notice = next((n for n in doc["notices"] if n.get("id") == notice_id), None)
+        if notice is None or not body:
+            return None, False
+        notice["body"] = body
+        notice["updated_at"] = _now()
+        return _notice_public(notice), True
+
+    return _mutate(fn)
 
 
 def delete_notice(notice_id: int) -> bool:
-    with connect() as conn:
-        cur = conn.execute("DELETE FROM notices WHERE id = ?", (notice_id,))
-    return cur.rowcount > 0
+    def fn(doc):
+        before = len(doc["notices"])
+        doc["notices"] = [n for n in doc["notices"] if n.get("id") != notice_id]
+        return (len(doc["notices"]) != before), (len(doc["notices"]) != before)
+
+    return _mutate(fn)
 
 
 # --------------------------------------------------------------------------- #
 # 휴강 / 타임 차단
 # --------------------------------------------------------------------------- #
 
-def get_day(day: str) -> dict:
-    with connect() as conn:
-        ctrl = conn.execute("SELECT * FROM day_controls WHERE day = ?", (day,)).fetchone()
-        blocked = [r["slot_id"] for r in conn.execute(
-            "SELECT slot_id FROM slot_blocks WHERE day = ?", (day,)).fetchall()]
-        counts = {r["slot_id"]: r["n"] for r in conn.execute(
-            "SELECT slot_id, COUNT(*) AS n FROM attendance WHERE day = ? GROUP BY slot_id", (day,)).fetchall()}
-    closed_all = bool(ctrl["closed_all"]) if ctrl else False
+def _count_slots(doc: dict, day: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for record in doc["attendance"]:
+        if record.get("day") == day:
+            counts[record["slot_id"]] = counts.get(record["slot_id"], 0) + 1
+    return counts
+
+
+def _day_state(doc: dict, day: str) -> dict:
+    control = (doc.get("day_controls") or {}).get(day) or {}
+    blocked = list((doc.get("slot_blocks") or {}).get(day) or [])
+    counts = _count_slots(doc, day)
+    closed_all = bool(control.get("closed_all"))
     slots = []
     for slot in SLOTS:
         taken = counts.get(slot["id"], 0)
@@ -343,83 +717,103 @@ def get_day(day: str) -> dict:
             "full": taken >= slot["capacity"],
             "open": (not closed_all) and slot["id"] not in blocked and taken < slot["capacity"],
         })
-    return {"date": day, "closed_all": closed_all, "note": ctrl["note"] if ctrl else "",
-            "blocked": blocked, "slots": slots}
+    return {
+        "date": day,
+        "closed_all": closed_all,
+        "note": control.get("note", ""),
+        "blocked": blocked,
+        "slots": slots,
+    }
+
+
+def get_day(day: str) -> dict:
+    return _read(lambda doc: (_day_state(doc, day), False))
 
 
 def set_day(day: str, closed_all: bool = False, blocked: list[str] | None = None, note: str | None = None) -> dict:
     blocked = [s for s in (blocked or []) if s in SLOT_BY_ID]
-    with connect() as conn:
-        conn.execute(
-            "INSERT INTO day_controls (day, closed_all, note, updated_at) VALUES (?, ?, ?, ?)"
-            " ON CONFLICT(day) DO UPDATE SET closed_all = excluded.closed_all,"
-            " note = CASE WHEN ? IS NULL THEN day_controls.note ELSE excluded.note END,"
-            " updated_at = excluded.updated_at",
-            (day, 1 if closed_all else 0, note or "", _now(), note),
-        )
-        conn.execute("DELETE FROM slot_blocks WHERE day = ?", (day,))
-        conn.executemany("INSERT OR IGNORE INTO slot_blocks (day, slot_id) VALUES (?, ?)",
-                         [(day, s) for s in blocked])
-    return get_day(day)
+
+    def fn(doc):
+        controls = doc.setdefault("day_controls", {})
+        control = controls.get(day) or {}
+        control["closed_all"] = bool(closed_all)
+        if note is not None:
+            control["note"] = note
+        control["note"] = control.get("note", "")
+        control["updated_at"] = _now()
+        controls[day] = control
+        blocks = doc.setdefault("slot_blocks", {})
+        if blocked:
+            blocks[day] = blocked
+        else:
+            blocks.pop(day, None)
+        return _day_state(doc, day), True
+
+    return _mutate(fn)
 
 
 # --------------------------------------------------------------------------- #
 # attendance
 # --------------------------------------------------------------------------- #
 
-class CheckinError(Exception):
-    def __init__(self, code: str, message: str):
-        super().__init__(message)
-        self.code = code
-        self.message = message
-
-
-def _attendance_row(row: sqlite3.Row) -> dict:
-    return {"id": row["id"], "user_id": row["user_id"], "day": row["day"], "slot_id": row["slot_id"],
-            "nickname": row["nickname"] or row["username"], "username": row["username"],
-            "created_at": row["created_at"]}
+def _attendance_public(doc: dict, record: dict) -> dict:
+    user = _find_user(doc, record.get("user_id")) or {}
+    return {
+        "id": record["id"],
+        "user_id": record["user_id"],
+        "day": record["day"],
+        "slot_id": record["slot_id"],
+        "nickname": user.get("nickname") or user.get("username") or "",
+        "username": user.get("username", ""),
+        "created_at": record.get("created_at", ""),
+    }
 
 
 def get_attendance(attendance_id: int) -> dict | None:
-    with connect() as conn:
-        row = conn.execute(
-            "SELECT a.*, u.username, u.nickname FROM attendance a JOIN users u ON u.id = a.user_id"
-            " WHERE a.id = ?", (attendance_id,)).fetchone()
-    return _attendance_row(row) if row else None
+    def fn(doc):
+        record = next((a for a in doc["attendance"] if a.get("id") == attendance_id), None)
+        return (_attendance_public(doc, record) if record else None), False
+
+    return _read(fn)
 
 
 def list_attendance(day: str) -> list[dict]:
-    with connect() as conn:
-        rows = conn.execute(
-            "SELECT a.*, u.username, u.nickname FROM attendance a JOIN users u ON u.id = a.user_id"
-            " WHERE a.day = ? ORDER BY a.created_at, a.id", (day,)).fetchall()
-    return [_attendance_row(r) for r in rows]
+    def fn(doc):
+        records = [a for a in doc["attendance"] if a.get("day") == day]
+        records.sort(key=lambda a: (a.get("created_at", ""), a.get("id", 0)))
+        return [_attendance_public(doc, a) for a in records], False
+
+    return _read(fn)
 
 
 def check_in(user_id: int, day: str, slot_id: str) -> dict:
-    """출석 체크. 휴강·차단·정원 초과·중복을 서버에서 막는다."""
-    state = get_day(day)
-    if state["closed_all"]:
-        raise CheckinError("closed", "오늘은 전체 휴강이라 출석할 수 없어요.")
-    slot = next((s for s in state["slots"] if s["id"] == slot_id), None)
-    if slot is None:
-        raise CheckinError("unknown_slot", "없는 타임이에요.")
-    if slot["blocked"]:
-        raise CheckinError("blocked", f"{slot['time']} 타임은 오늘 휴강이에요.")
-    if slot["full"]:
-        raise CheckinError("full", f"{slot['time']} 타임은 정원이 다 찼어요 ({slot['taken']}/{slot['capacity']}).")
-    with connect() as conn:
-        try:
-            cur = conn.execute(
-                "INSERT INTO attendance (user_id, day, slot_id, created_at) VALUES (?, ?, ?, ?)",
-                (user_id, day, slot_id, _now()),
-            )
-        except sqlite3.IntegrityError:
-            raise CheckinError("duplicate", f"이미 {slot['time']} 타임에 출석했어요.") from None
-        row = conn.execute(
-            "SELECT a.*, u.username, u.nickname FROM attendance a JOIN users u ON u.id = a.user_id"
-            " WHERE a.id = ?", (cur.lastrowid,)).fetchone()
-    return _attendance_row(row)
+    """출석 체크. 휴강·차단·정원 초과·중복을 저장 직전에 막는다."""
+
+    def fn(doc):
+        state = _day_state(doc, day)
+        if state["closed_all"]:
+            raise CheckinError("closed", "오늘은 전체 휴강이라 출석할 수 없어요.")
+        slot = next((s for s in state["slots"] if s["id"] == slot_id), None)
+        if slot is None:
+            raise CheckinError("unknown_slot", "없는 타임이에요.")
+        if slot["blocked"]:
+            raise CheckinError("blocked", f"{slot['time']} 타임은 오늘 휴강이에요.")
+        if slot["full"]:
+            raise CheckinError("full", f"{slot['time']} 타임은 정원이 다 찼어요 ({slot['taken']}/{slot['capacity']}).")
+        if any(a.get("user_id") == user_id and a.get("day") == day and a.get("slot_id") == slot_id
+               for a in doc["attendance"]):
+            raise CheckinError("duplicate", f"이미 {slot['time']} 타임에 출석했어요.")
+        record = {
+            "id": _next_id(doc, "attendance"),
+            "user_id": user_id,
+            "day": day,
+            "slot_id": slot_id,
+            "created_at": _now(),
+        }
+        doc["attendance"].append(record)
+        return _attendance_public(doc, record), True
+
+    return _mutate(fn)
 
 
 def add_checkin(user_id: int, target_date: str, slot_id: str, status: str = "voted",
@@ -428,21 +822,23 @@ def add_checkin(user_id: int, target_date: str, slot_id: str, status: str = "vot
     try:
         return check_in(user_id, target_date, slot_id)
     except CheckinError as exc:
-        if exc.code == "duplicate":
-            with connect() as conn:
-                row = conn.execute(
-                    "SELECT a.*, u.username, u.nickname FROM attendance a JOIN users u ON u.id = a.user_id"
-                    " WHERE a.user_id = ? AND a.day = ? AND a.slot_id = ?",
-                    (user_id, target_date, slot_id)).fetchone()
-            if row:
-                return _attendance_row(row)
-        raise
+        if exc.code != "duplicate":
+            raise
+    existing = [a for a in list_attendance(target_date)
+                if a["user_id"] == user_id and a["slot_id"] == slot_id]
+    if existing:
+        return existing[0]
+    raise CheckinError("duplicate", "이미 출석한 기록이 있어요.")
 
 
 def cancel_checkin(attendance_id: int) -> bool:
-    with connect() as conn:
-        cur = conn.execute("DELETE FROM attendance WHERE id = ?", (attendance_id,))
-    return cur.rowcount > 0
+    def fn(doc):
+        before = len(doc["attendance"])
+        doc["attendance"] = [a for a in doc["attendance"] if a.get("id") != attendance_id]
+        removed = len(doc["attendance"]) != before
+        return removed, removed
+
+    return _mutate(fn)
 
 
 def slot_info(slot_id: str) -> dict:
@@ -451,8 +847,8 @@ def slot_info(slot_id: str) -> dict:
 
 if __name__ == "__main__":
     init_db()
-    print(f"초기화 완료: {DB_PATH}")
+    print(f"저장소: {backend_name()}")
     for user in list_users():
         print(f"  #{user['id']} {user['username']} ({user['nickname']})"
               f"{' 👑' if user['is_admin'] else ''}")
-    print(kst_today(), get_day(kst_today())["slots"])
+    print(kst_today(), [s["taken"] for s in get_day(kst_today())["slots"]])
