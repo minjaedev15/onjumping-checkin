@@ -198,6 +198,8 @@ function renderTabs() {
   $("#runline").hidden = !admin;
   $("#side-panel").hidden = !admin;
   $("#member-cards").hidden = admin || !state.session;
+  const columns = document.querySelector(".columns");
+  if (columns) columns.classList.toggle("solo", !admin);
   $("#admin-slots").hidden = !admin;
   $("#history-section").hidden = admin || !state.session;
   $("#shakes-admin").hidden = !admin;

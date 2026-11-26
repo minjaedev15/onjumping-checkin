@@ -13,7 +13,7 @@
   --accent-soft: #E7EFE6;
   --font-sans: "Pretendard Variable", Pretendard, -apple-system, BlinkMacSystemFont,
     "Apple SD Gothic Neo", "Noto Sans KR", "Malgun Gothic", system-ui, sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --font-mono: ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
 }
 
 * { box-sizing: border-box; }
@@ -200,6 +200,7 @@ select:focus { border-color: var(--ink-2); background-color: #fff; }
 
 /* ---------- 2단 ---------- */
 
+.columns.solo { grid-template-columns: minmax(0, 1fr); }
 .columns {
   display: grid;
   grid-template-columns: minmax(0, 1.62fr) minmax(300px, 1fr);
@@ -568,11 +569,19 @@ body.big-font .data-table th, body.big-font .data-table td { font-size: 16px; }
 .slot-card.is-mine { border-color: var(--accent); background: var(--accent-soft); }
 .sc-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
 .sc-head h3 { font-size: 19px; }
-.sc-time { font-size: 26px; letter-spacing: -0.01em; }
+.sc-time { font-size: 24px; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
 .sc-remain { font-size: 15px; color: var(--ink-2); }
 .slot-card.is-mine .sc-remain { color: var(--accent); font-weight: 600; }
 .sc-sub { font-size: 12.5px; color: var(--muted); font-family: var(--font-mono); }
 .slot-card .btn { margin-top: 6px; width: 100%; }
+.slot-card .btn:disabled {
+  border: 1px dashed var(--hair-dark);
+  background: transparent;
+  color: var(--muted);
+  opacity: 1;
+}
+.slot-card.is-mine .meter span { background: var(--accent); }
+.slot-card.is-mine.is-dim { background: var(--accent-soft); border-color: var(--accent); color: var(--ink); }
 
 /* 용량 미터 */
 .meter {
@@ -608,7 +617,7 @@ body.big-font .data-table th, body.big-font .data-table td { font-size: 16px; }
   width: 34px; font-size: 15px; color: var(--ink-2); flex: none;
 }
 .weekly-row select { flex: 1; min-height: 44px; }
-#member-weekly { grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 18px; }
+#member-weekly { grid-template-columns: minmax(0, 1fr); max-width: 440px; }
 
 /* 큰 토글 */
 .big-toggle { display: inline-flex; align-items: center; gap: 12px; cursor: pointer; user-select: none; }
