@@ -59,11 +59,15 @@ def next_run_at(cfg: dict) -> str | None:
     except ValueError:
         hour, minute = 21, 1
     now = datetime.now(KST)
-    for offset in range(0, 8):
-        day = now.date() + timedelta(days=offset)
-        if day.weekday() not in {WEEKDAY_INDEX[d] for d in days}:
+    keys = list(WEEKDAY_INDEX.keys())
+    ahead = max(0, int(cfg.get("days_ahead", 1) or 1))
+    for offset in range(0, 9):
+        run_day = now.date() + timedelta(days=offset)
+        target = run_day + timedelta(days=ahead)
+        # 전날 밤에 예약하므로, 다음 날 수업이 있는 요일만 실행한다.
+        if not weekly.get(keys[target.weekday()]):
             continue
-        candidate = datetime.combine(day, dtime(hour, minute), tzinfo=KST)
+        candidate = datetime.combine(run_day, dtime(hour, minute), tzinfo=KST)
         if candidate > now:
             return candidate.isoformat(timespec="minutes")
     return None

@@ -226,7 +226,19 @@ function renderSummary() {
   $("#day-label-member").textContent = day ? shortDate(day.date) : "";
   $("#holiday-toggle").checked = Boolean(day?.closed_all);
   $("#holiday-banner").hidden = !day?.closed_all;
-  $("#auto-next").textContent = `다음 자동 출석 · ${next}`;
+  const mine = state.session?.weekly;
+  let myNext = next;
+  if (!isAdmin() && mine) {
+    for (let i = 1; i <= 8; i += 1) {
+      const d = addDays(state.day?.date || state.status.today, i);
+      const key = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"][new Date(`${d}T00:00:00Z`).getUTCDay()];
+      if (mine[key]) {
+        myNext = `${shortDate(d)} ${slotById(mine[key]).time}`;
+        break;
+      }
+    }
+  }
+  $("#auto-next").textContent = `다음 자동 출석 · ${myNext}`;
   $("#auto-toggle").checked = Boolean(state.session?.auto);
 }
 
