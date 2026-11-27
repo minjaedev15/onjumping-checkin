@@ -7,9 +7,15 @@
 - 라이브: **https://onjumping.vercel.app**
 - 저장소: https://github.com/minjaedev15/onjumping-checkin
 
-| 로그인 | 회원 홈(블록) | 관리자 홈 |
+| 로그인 | 홈(블록) | 출석하기 |
 |---|---|---|
-| ![로그인](docs/screenshots/login.png) | ![회원 화면](docs/screenshots/member.png) | ![관리자 화면](docs/screenshots/admin.png) |
+| ![로그인](docs/screenshots/login.png) | ![홈](docs/screenshots/home.png) | ![출석](docs/screenshots/checkin.png) |
+
+| 공지 이미지 | 관리자 · 출석/휴강 | 앱 설치 패널 |
+|---|---|---|
+| ![공지 이미지](docs/screenshots/notice-image.png) | ![관리자](docs/screenshots/admin.png) | ![PWA 설치](docs/screenshots/install-panel.png) |
+
+홈 공지 블록의 썸네일: `docs/screenshots/home-notice-image.png` · 공지 관리: `docs/screenshots/admin-notices.png`
 
 ## 화면
 
