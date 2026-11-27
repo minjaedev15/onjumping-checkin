@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import secrets
 import sys
@@ -162,6 +163,51 @@ class StoreTest(unittest.TestCase):
         store.delete_notice(notice["id"])
         store.reset_cache()
         self.assertIsNone(store.get_notice(notice["id"]))
+
+    def test_seed_notice_only_once(self):
+        doc = store._blank_state()
+        self.assertTrue(store._ensure_notice(doc))
+        self.assertEqual(len(doc["notices"]), 1)
+        self.assertTrue(doc["settings"]["notice_seeded"])
+
+        # 관리자가 기본 공지를 지운 뒤에는 다시 만들지 않는다
+        doc["notices"] = []
+        self.assertFalse(store._ensure_notice(doc))
+        self.assertEqual(doc["notices"], [])
+
+        # 플래그가 없던 예전 문서도 이미 공지를 만들어 둔 기록(seq.notice)으로 판단한다
+        legacy = store._blank_state()
+        legacy["seq"]["notice"] = 2
+        store._ensure_notice(legacy)
+        self.assertEqual(legacy["notices"], [])
+        self.assertTrue(legacy["settings"]["notice_seeded"])
+
+    def test_deleted_notice_stays_deleted_after_init_db(self):
+        for notice in store.list_notices():
+            store.delete_notice(notice["id"])
+        store.reset_cache()
+        self.assertEqual(store.list_notices(), [])
+
+        store.init_db()  # 요청마다 다시 불리는 호출
+        store.reset_cache()
+        self.assertEqual(store.list_notices(), [])
+        self.assertIsNone(store.latest_notice())
+
+        # 저장된 문서에서 플래그를 지워 예전 문서처럼 만들어도 되살아나지 않는다
+        raw = store._backend().load_raw()
+        doc = store._decode(raw)
+        doc["settings"].pop("notice_seeded", None)
+        doc["notices"] = []
+        store._backend().save_raw(raw, json.dumps(doc, ensure_ascii=False,
+                                                  separators=(",", ":"), sort_keys=True))
+        store.reset_cache()
+        store.init_db()
+        store.reset_cache()
+        self.assertEqual(store.list_notices(), [])
+
+        # 테스트 뒤처리: 기본 공지를 다시 둔다(다른 테스트는 공지가 있는 상태를 가정)
+        store.set_notice(store.SEED_NOTICE, "관리자")
+        store.reset_cache()
 
     def test_admin_password_comes_from_env_only(self):
         admin = store.authenticate("admin", ADMIN_PASSWORD)

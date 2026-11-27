@@ -22,7 +22,9 @@
                    image_data 는 선택 항목이며 `data:image/...;base64,...` 형식의 문자열이다.
     day_controls   {day: {closed_all, note, updated_at}}
     slot_blocks    {day: [slot_id, ...]}
-    settings       {secret: ...}  (SESSION_SECRET 환경변수가 없을 때만)
+    settings       {secret: ..., notice_seeded: true}
+                   secret 은 SESSION_SECRET 환경변수가 없을 때만 만든다.
+                   notice_seeded 는 기본 공지를 이미 한 번 넣었다는 표시다.
 
 관리자 계정의 비밀번호는 문서에 저장하지 않는다. `admin` 로그인은 서버 환경변수
 ADMIN_PASSWORD(또는 ADMIN_PASSWORD_HASH)로만 검증되고, 저장소에는 관리자 계정의
@@ -468,8 +470,23 @@ def _ensure_admin(doc: dict) -> bool:
 
 
 def _ensure_notice(doc: dict) -> bool:
+    """기본 공지는 저장소 수명 동안 딱 한 번만 넣는다.
+
+    `init_db()` 는 요청마다 불리므로, 관리자가 공지를 모두 지운 뒤 다음 요청에서
+    기본 공지가 되살아나면 안 된다. 그래서 시드 여부를 settings["notice_seeded"]
+    에 남기고, 이 플래그가 없던 예전 문서는 이미 만들어 둔 공지 번호
+    (seq.notice > 1)로 판단한다.
+    """
+    settings = doc.setdefault("settings", {})
+    changed = False
+    if not settings.get("notice_seeded"):
+        settings["notice_seeded"] = True
+        changed = True
     if doc["notices"] or not SEED_NOTICE:
-        return False
+        return changed
+    already_seeded = int((doc.get("seq") or {}).get("notice") or 1) > 1
+    if already_seeded:
+        return changed
     now = _now()
     doc["notices"].append({
         "id": _next_id(doc, "notice"),

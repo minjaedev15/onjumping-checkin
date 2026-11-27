@@ -1262,9 +1262,18 @@ def render_checkin(user: dict, flash: str = "", error: bool = False) -> Response
     # 시간 선택 출석 카드
     already_done = bool(mine_by_slot)
     done_badge = ' <span class="badge today">오늘 출석 완료</span>' if already_done else ""
+    checked_slot_id = next((s["id"] for s in state["slots"] if s["id"] in mine_by_slot), None)
+    open_slots = [] if already_done else [
+        s for s in state["slots"] if s["open"] and s["id"] not in mine_by_slot]
+    # 이미 출석했으면 그 타임을, 아직이면 고를 수 있는 첫 타임을 기본 선택으로 둔다.
+    # 고를 수 있는 타임이 없어도 첫 타임을 보여 줘 콤보가 빈칸으로 보이지 않게 한다.
+    fallback_slot_id = state["slots"][0]["id"] if state["slots"] else None
+    selected_slot_id = checked_slot_id or (open_slots[0]["id"] if open_slots else fallback_slot_id)
     options = []
     for slot in state["slots"]:
         marks = []
+        if state["closed_all"]:
+            marks.append("전체 휴강")
         if slot["blocked"]:
             marks.append("휴강")
         if slot["full"]:
@@ -1272,13 +1281,16 @@ def render_checkin(user: dict, flash: str = "", error: bool = False) -> Response
         if slot["id"] in mine_by_slot:
             marks.append("출석함")
         suffix = f" ({' · '.join(marks)})" if marks else ""
+        selected = slot["id"] == selected_slot_id
         unavailable = bool(marks) or state["closed_all"] or already_done
+        # 선택된 타임은 disabled 로 두지 않는다. 모두 disabled 면 콤보가 빈칸처럼 보인다.
+        attrs = " selected" if selected else ""
+        if unavailable and not selected:
+            attrs += " disabled"
         options.append(
-            f'<option value="{slot["id"]}"{" disabled" if unavailable else ""}>'
+            f'<option value="{slot["id"]}"{attrs}>'
             f'{slot["time"]} {slot["name"]}{suffix}</option>'
         )
-    open_slots = [] if already_done else [
-        s for s in state["slots"] if s["open"] and s["id"] not in mine_by_slot]
     select_disabled = "" if open_slots else " disabled"
     button_disabled = "" if open_slots else " disabled"
     button_label = "출석하기"
@@ -1459,6 +1471,8 @@ def render_admin(user: dict, flash: str = "", error: bool = False) -> Response:
     </label>"""
 
     parts = [page_note(f"{date_label(today)} · 전체 {len(rows)}명 출석")]
+    if state["closed_all"]:
+        parts.append('<div class="banner">🚫 오늘은 전체 휴강입니다. 아래 타임도 모두 닫혀 있어요.</div>')
     parts.append(f"""
 <div class="card">
     <h2>🚫 휴강 제어</h2>
@@ -1477,7 +1491,9 @@ def render_admin(user: dict, flash: str = "", error: bool = False) -> Response:
     for slot in state["slots"]:
         people = by_slot.get(slot["id"], [])
         head_badges = f'<span class="badge">{slot["taken"]} / {slot["capacity"]}</span>'
-        if slot["blocked"]:
+        if state["closed_all"]:
+            head_badges += ' <span class="badge off">전체 휴강</span>'
+        elif slot["blocked"]:
             head_badges += ' <span class="badge off">휴강</span>'
         elif slot["full"]:
             head_badges += ' <span class="badge off">마감</span>'

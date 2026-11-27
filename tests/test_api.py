@@ -632,6 +632,60 @@ class AppTest(unittest.TestCase):
             self.assertIn("beforeinstallprompt", html)
 
     # ---------------- 기타 ---------------- #
+    def test_18_deleted_notice_stays_deleted_across_requests(self):
+        for notice in store.list_notices():
+            store.delete_notice(notice["id"])
+
+        # 요청마다 init_db() 가 다시 도는데도 기본 공지가 되살아나지 않는다
+        _, _, checkin = self.member.get("/checkin")
+        self.assertIn("오늘 올라온 공지가 없습니다.", checkin)
+        self.assertNotIn("출석 앱이 새로워졌어요", checkin)
+
+        _, _, notices = self.member.get("/notices")
+        self.assertNotIn("출석 앱이 새로워졌어요", notices)
+        self.assertEqual(store.list_notices(), [])
+
+        # 관리자 화면에도 공지가 없음으로 보인다
+        _, _, admin_html = self.admin.get("/admin/notices")
+        self.assertNotIn("출석 앱이 새로워졌어요", admin_html)
+
+    def test_19_checkin_keeps_selected_slot_visible(self):
+        _, _, before = self.member.get("/checkin")
+        # 출석 전에는 고를 수 있는 첫 타임이 선택되어 있다
+        self.assertIn('<option value="first" selected>08:30 첫째타임</option>', before)
+
+        self.member.post("/checkin", {"slot_id": "third"})
+        _, _, html = self.member.get("/checkin")
+
+        # 이미 출석한 타임이 selected 로 남아 콤보가 빈칸으로 보이지 않는다
+        self.assertIn('<option value="third" selected>18:30 셋째타임 (출석함)</option>', html)
+        self.assertNotIn('<option value="third" selected disabled>', html)
+        for slot_id in ("first", "second", "fourth"):
+            self.assertIn(f'<option value="{slot_id}" disabled>', html)
+
+        # 선택·버튼은 그대로 잠기고 중복 출석도 계속 막힌다
+        self.assertIn('aria-label="출석 타임" disabled', html)
+        self.assertIn(">오늘 출석 완료</button>", html)
+        self.member.post("/checkin", {"slot_id": "first"})
+        self.assertEqual(len([r for r in store.list_attendance(store.kst_today())
+                              if r["username"] == "minjae"]), 1)
+
+    def test_20_admin_closed_all_shows_badge_on_slot_cards(self):
+        _, _, before = self.admin.get("/admin")
+        self.assertEqual(before.count('<span class="badge off">전체 휴강</span>'), 0)
+
+        self.admin.post("/admin/day", {"closed_all": "1"})
+        _, _, html = self.admin.get("/admin")
+        self.assertIn('<div class="banner">🚫 오늘은 전체 휴강입니다.', html)
+        # 타임별 카드 4개 모두에 '전체 휴강' 배지
+        self.assertEqual(html.count('<span class="badge off">전체 휴강</span>'), 4)
+        for time_label in ("08:30", "09:30", "18:30", "19:40"):
+            self.assertIn(time_label, html)
+
+        self.admin.post("/admin/day", {})
+        _, _, html = self.admin.get("/admin")
+        self.assertEqual(html.count('<span class="badge off">전체 휴강</span>'), 0)
+
     def test_14_health_and_404(self):
         status, _, body = self.member.get("/health")
         self.assertEqual(status, 200)
