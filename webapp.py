@@ -1187,8 +1187,8 @@ def render_index(user: dict, flash: str = "", error: bool = False) -> Response:
     elif mine_by_slot:
         first = next(s for s in state["slots"] if s["id"] in mine_by_slot)
         extra = len(mine_by_slot) - 1
-        badge_label, badge_class = "출석함", "today"
-        checkin_sub = f"{first['time']} {first['name']} 출석 완료" + (f" 외 {extra}개" if extra else "")
+        badge_label, badge_class = "출석 완료", "today"
+        checkin_sub = f"{first['time']} {first['name']}" + (f" 외 {extra}개" if extra else "")
     else:
         badge_label, badge_class = "출석 전", "off"
         open_count = sum(1 for s in state["slots"] if s["open"])
@@ -1260,6 +1260,8 @@ def render_checkin(user: dict, flash: str = "", error: bool = False) -> Response
         parts.append('<div class="banner">🚫 오늘은 전체 휴강입니다.</div>')
 
     # 시간 선택 출석 카드
+    already_done = bool(mine_by_slot)
+    done_badge = ' <span class="badge today">오늘 출석 완료</span>' if already_done else ""
     options = []
     for slot in state["slots"]:
         marks = []
@@ -1270,15 +1272,22 @@ def render_checkin(user: dict, flash: str = "", error: bool = False) -> Response
         if slot["id"] in mine_by_slot:
             marks.append("출석함")
         suffix = f" ({' · '.join(marks)})" if marks else ""
-        unavailable = bool(marks) or state["closed_all"]
+        unavailable = bool(marks) or state["closed_all"] or already_done
         options.append(
             f'<option value="{slot["id"]}"{" disabled" if unavailable else ""}>'
             f'{slot["time"]} {slot["name"]}{suffix}</option>'
         )
-    open_slots = [s for s in state["slots"] if s["open"] and s["id"] not in mine_by_slot]
+    open_slots = [] if already_done else [
+        s for s in state["slots"] if s["open"] and s["id"] not in mine_by_slot]
     select_disabled = "" if open_slots else " disabled"
     button_disabled = "" if open_slots else " disabled"
-    if state["closed_all"]:
+    button_label = "출석하기"
+    if already_done:
+        done_slot = next(s for s in state["slots"] if s["id"] in mine_by_slot)
+        button_label = "오늘 출석 완료"
+        hint = (f"오늘은 이미 {done_slot['time']} 타임에 출석했어요. "
+                "다른 타임으로 바꾸려면 아래에서 출석을 취소한 뒤 다시 선택해 주세요.")
+    elif state["closed_all"]:
         hint = "오늘은 전체 휴강이라 출석할 수 없습니다."
     elif not open_slots:
         hint = "지금 선택할 수 있는 타임이 없습니다."
@@ -1301,12 +1310,12 @@ def render_checkin(user: dict, flash: str = "", error: bool = False) -> Response
 
     parts.append(f"""
 <div class="card">
-    <h2>✅ 시간 선택해서 출석하기</h2>
+    <h2>✅ 시간 선택해서 출석하기{done_badge}</h2>
     <form method="POST" action="/checkin">
         <select name="slot_id" aria-label="출석 타임"{select_disabled}>
             {''.join(options)}
         </select>
-        <button class="wide" style="margin-top:8px"{button_disabled}>출석하기</button>
+        <button class="wide" style="margin-top:8px"{button_disabled}>{button_label}</button>
     </form>
     <p class="small">{hint}</p>{('<div style="margin-top:12px">' + my_rows + "</div>") if my_rows else ""}
 </div>""")

@@ -811,10 +811,21 @@ def list_attendance(day: str) -> list[dict]:
 
 
 def check_in(user_id: int, day: str, slot_id: str) -> dict:
-    """출석 체크. 휴강·차단·정원 초과·중복을 저장 직전에 막는다."""
+    """출석 체크. 하루 한 번만 출석할 수 있고, 휴강·차단·정원 초과를 저장 직전에 막는다."""
 
     def fn(doc):
         state = _day_state(doc, day)
+        # 같은 날 이미 출석한 기록이 있으면 다른 타임이어도 거부한다(취소 후 다시 가능).
+        mine_today = [a for a in doc["attendance"]
+                      if a.get("user_id") == user_id and a.get("day") == day]
+        if mine_today:
+            first = min(mine_today, key=lambda a: (a.get("created_at", ""), a.get("id", 0)))
+            time = (SLOT_BY_ID.get(first.get("slot_id"), {}) or {}).get("time", "")
+            where = f"{time} 타임" if time else "오늘"
+            raise CheckinError(
+                "already_checked_in",
+                f"오늘은 이미 {where}에 출석했어요. 다시 출석하려면 먼저 출석을 취소해 주세요.",
+            )
         if state["closed_all"]:
             raise CheckinError("closed", "오늘은 전체 휴강이라 출석할 수 없어요.")
         slot = next((s for s in state["slots"] if s["id"] == slot_id), None)
@@ -824,9 +835,6 @@ def check_in(user_id: int, day: str, slot_id: str) -> dict:
             raise CheckinError("blocked", f"{slot['time']} 타임은 오늘 휴강이에요.")
         if slot["full"]:
             raise CheckinError("full", f"{slot['time']} 타임은 정원이 다 찼어요 ({slot['taken']}/{slot['capacity']}).")
-        if any(a.get("user_id") == user_id and a.get("day") == day and a.get("slot_id") == slot_id
-               for a in doc["attendance"]):
-            raise CheckinError("duplicate", f"이미 {slot['time']} 타임에 출석했어요.")
         record = {
             "id": _next_id(doc, "attendance"),
             "user_id": user_id,
@@ -842,14 +850,13 @@ def check_in(user_id: int, day: str, slot_id: str) -> dict:
 
 def add_checkin(user_id: int, target_date: str, slot_id: str, status: str = "voted",
                 taken: int | None = None, capacity: int | None = None, note: str = "") -> dict:
-    """checker.py 같은 워커용. 이미 있으면 기존 기록을 돌려준다."""
+    """checker.py 같은 워커용. 이미 그날 기록이 있으면 기존 기록을 돌려준다."""
     try:
         return check_in(user_id, target_date, slot_id)
     except CheckinError as exc:
-        if exc.code != "duplicate":
+        if exc.code not in ("duplicate", "already_checked_in"):
             raise
-    existing = [a for a in list_attendance(target_date)
-                if a["user_id"] == user_id and a["slot_id"] == slot_id]
+    existing = [a for a in list_attendance(target_date) if a["user_id"] == user_id]
     if existing:
         return existing[0]
     raise CheckinError("duplicate", "이미 출석한 기록이 있어요.")

@@ -279,7 +279,7 @@ class AppTest(unittest.TestCase):
 
         # 홈 블록에도 오늘 출석 상태가 보인다
         _, _, home = self.member.get("/")
-        self.assertIn("출석함", home)
+        self.assertIn("출석 완료", home)
         self.assertIn("18:30", home)
 
         self.member.post("/checkin", {"slot_id": "third"})
@@ -322,6 +322,42 @@ class AppTest(unittest.TestCase):
         finally:
             for user in made:
                 store.delete_user(user["id"])
+
+    def test_06b_only_one_checkin_per_day(self):
+        day = store.kst_today()
+        self.member.post("/checkin", {"slot_id": "third"})
+        mine = [r for r in store.list_attendance(day) if r["username"] == "minjae"]
+        self.assertEqual(len(mine), 1)
+
+        # 다른 타임으로 또 출석하려 해도 거부된다
+        status, headers, _ = self.member.post("/checkin", {"slot_id": "first"})
+        self.assertEqual(status, 303)
+        _, _, html = self.member.get("/checkin")
+        self.assertIn("오늘은 이미 18:30 타임에 출석했어요", html)
+        mine = [r for r in store.list_attendance(day) if r["username"] == "minjae"]
+        self.assertEqual(len(mine), 1)
+        self.assertEqual(mine[0]["slot_id"], "third")
+
+        # 같은 타임으로 또 눌러도 한 번 더 쌓이지 않는다
+        self.member.post("/checkin", {"slot_id": "third"})
+        self.assertEqual(len([r for r in store.list_attendance(day) if r["username"] == "minjae"]), 1)
+
+        # 버튼·타임 선택이 잠기고 "오늘 출석 완료"가 보인다
+        self.assertIn("오늘 출석 완료", html)
+        self.assertIn(">오늘 출석 완료</button>", html)
+        self.assertIn('aria-label="출석 타임" disabled', html)
+        self.assertIn('<option value="first" disabled>', html)
+
+        _, _, home = self.member.get("/")
+        self.assertIn("출석 완료", home)
+
+        # 취소하면 다시 출석할 수 있다
+        self.member.post(f"/checkin/cancel/{mine[0]['id']}")
+        status, _, _ = self.member.post("/checkin", {"slot_id": "first"})
+        self.assertEqual(status, 303)
+        mine = [r for r in store.list_attendance(day) if r["username"] == "minjae"]
+        self.assertEqual(len(mine), 1)
+        self.assertEqual(mine[0]["slot_id"], "first")
 
     # ---------------- 휴강 ---------------- #
     def test_09_holiday_blocks_checkin(self):

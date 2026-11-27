@@ -112,6 +112,32 @@ class StoreTest(unittest.TestCase):
         store.reset_cache()
         self.assertIsNone(store.get_notice(notice["id"]))
 
+    def test_one_checkin_per_day(self):
+        user = store.create_user("once", secrets.token_urlsafe(8), "한번")
+        day = store.kst_today()
+        try:
+            first = store.check_in(user["id"], day, "third")
+            self.assertEqual(first["slot_id"], "third")
+
+            with self.assertRaises(store.CheckinError) as ctx:
+                store.check_in(user["id"], day, "first")
+            self.assertEqual(ctx.exception.code, "already_checked_in")
+
+            with self.assertRaises(store.CheckinError):
+                store.check_in(user["id"], day, "third")
+
+            mine = [a for a in store.list_attendance(day) if a["user_id"] == user["id"]]
+            self.assertEqual(len(mine), 1)
+
+            store.cancel_checkin(mine[0]["id"])
+            again = store.check_in(user["id"], day, "first")
+            self.assertEqual(again["slot_id"], "first")
+        finally:
+            for record in store.list_attendance(day):
+                if record["user_id"] == user["id"]:
+                    store.cancel_checkin(record["id"])
+            store.delete_user(user["id"])
+
     def test_notice_image_round_trip(self):
         notice = store.set_notice("사진 공지", "관리자")
         self.assertEqual(notice["image_data"], "")
