@@ -1142,7 +1142,7 @@ def _block(href: str, icon: str, title: str, sub: str = "", badge_label: str = "
 
 
 def render_index(user: dict, flash: str = "", error: bool = False) -> Response:
-    """홈: 안드로이드 앱 홈처럼 큰 블록(타일)로 메뉴를 보여 준다. 네비게이션 바 없음."""
+    """홈: 모바일 앱 홈처럼 큰 블록(타일)로 메뉴를 보여 준다. 네비게이션 바 없음."""
     today = store.kst_today()
     state = store.get_day(today)
     rows = store.list_attendance(today)
