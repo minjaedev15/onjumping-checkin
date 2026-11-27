@@ -1191,8 +1191,9 @@ def render_index(user: dict, flash: str = "", error: bool = False) -> Response:
         checkin_sub = f"{first['time']} {first['name']} 출석 완료" + (f" 외 {extra}개" if extra else "")
     else:
         badge_label, badge_class = "출석 전", "off"
-        open_times = " · ".join(s["time"] for s in state["slots"] if s["open"])
-        checkin_sub = "타임을 골라 출석해요" + (f" ({open_times})" if open_times else " (지금은 열린 타임이 없어요)")
+        open_count = sum(1 for s in state["slots"] if s["open"])
+        checkin_sub = (f"열린 타임 {open_count}개 · 골라서 출석해요" if open_count
+                       else "지금은 열린 타임이 없어요")
 
     parts.append(
         '<div class="blocks">'
