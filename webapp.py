@@ -3,7 +3,8 @@
 로컬 server.py 와 Vercel api/index.py 가 같은 `app` 을 쓴다. 자바스크립트 없이
 폼 전송 → 리다이렉트 → 플래시 메시지로 동작하고, 화면은 페이지별로 나뉜다.
 
-    /                 오늘 출석 (로그인 필요)
+    /                 홈 블록 (로그인 필요)
+    /checkin          출석하기 (타임 선택 + 공지)
     /notices          공지
     /auto             평일 자동 출석 · 내 정보
     /login            로그인
@@ -14,6 +15,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import hmac
 import os
@@ -21,6 +24,7 @@ import re
 import urllib.parse
 from datetime import date
 from http.cookies import SimpleCookie
+from pathlib import Path
 
 import store
 
@@ -51,56 +55,184 @@ body {
     -webkit-text-size-adjust: 100%;
 }
 
-/* 상단 헤더 + 탭 */
+/* ---------- 홈 상단 바 ---------- */
 .topbar { background: #5865f2; color: #fff; }
 .topbar-inner {
-    max-width: 980px;
+    max-width: 720px;
     margin: 0 auto;
-    padding: 12px 20px 10px;
+    padding: 14px 18px;
     display: flex;
     align-items: center;
-    gap: 14px;
-    flex-wrap: wrap;
+    gap: 12px;
 }
+.topbar.wide .topbar-inner { max-width: 980px; }
 .brand {
     color: #fff;
     text-decoration: none;
     font-size: 19px;
-    font-weight: 700;
-    letter-spacing: -0.3px;
+    font-weight: 800;
+    letter-spacing: -0.4px;
     white-space: nowrap;
 }
-.tabs { display: flex; gap: 4px; flex-wrap: wrap; flex: 1 1 auto; min-width: 0; }
-.tab {
-    color: #e3e6ff;
-    text-decoration: none;
-    padding: 7px 12px;
-    border-radius: 999px;
-    font-size: 14px;
-    white-space: nowrap;
-}
-.tab:hover { background: rgba(255, 255, 255, 0.14); }
-.tab.active { background: #fff; color: #5865f2; font-weight: 700; }
-.tab.admin { border: 1px solid rgba(255, 255, 255, 0.45); }
 .who {
     margin-left: auto;
     display: flex;
     align-items: center;
-    gap: 10px;
-    font-size: 14px;
-    color: #e3e6ff;
+    gap: 8px;
+    font-size: 13px;
+    color: #dfe3ff;
     white-space: nowrap;
 }
-.who a { color: #fff; text-decoration: none; opacity: 0.9; }
-.who a:hover { opacity: 1; text-decoration: underline; }
+.who b { color: #fff; font-weight: 700; }
+.who a {
+    color: #dfe3ff;
+    text-decoration: none;
+    padding: 7px 10px;
+    border-radius: 9px;
+}
+.who a:hover { background: rgba(255, 255, 255, 0.14); }
 
-.container { max-width: 720px; margin: 26px auto 48px; padding: 0 18px; }
+/* ---------- 서브 화면 앱바 (← 뒤로 + 제목) ---------- */
+.appbar {
+    background: #fff;
+    border-bottom: 1px solid #e9ecf3;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+}
+.appbar-inner {
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 9px 12px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.appbar.wide .appbar-inner { max-width: 980px; }
+.back {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 8px 11px;
+    border-radius: 11px;
+    color: #4a4f5c;
+    font-size: 15px;
+    font-weight: 600;
+    text-decoration: none;
+    white-space: nowrap;
+}
+.back:hover { background: #f1f3f8; }
+.appbar h1 {
+    margin: 0;
+    font-size: 17px;
+    font-weight: 700;
+    letter-spacing: -0.3px;
+}
+
+.container { max-width: 720px; margin: 18px auto 48px; padding: 0 16px; }
 .container.wide { max-width: 980px; }
 
-.page-head { margin: 0 4px 16px; }
-.page-head h1 { margin: 0; font-size: 24px; letter-spacing: -0.4px; }
-.page-head p { margin: 6px 0 0; color: #6b7180; font-size: 14px; }
+.dash-head { margin: 4px 2px 16px; }
+.dash-head h1 { margin: 0; font-size: 22px; letter-spacing: -0.5px; }
+.dash-head p { margin: 6px 0 0; color: #7b818e; font-size: 14px; }
 
+.page-note { margin: 2px 4px 14px; color: #7b818e; font-size: 13.5px; }
+
+/* ---------- 앱 블록 (홈 대시보드) ---------- */
+.blocks {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+}
+.block {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    min-height: 118px;
+    padding: 16px;
+    background: #fff;
+    border-radius: 20px;
+    box-shadow: 0 3px 12px rgba(0, 0, 0, 0.06);
+    color: #222;
+    text-decoration: none;
+    transition: transform 0.08s ease, box-shadow 0.12s ease;
+}
+.block:active { transform: scale(0.98); }
+.block:hover { box-shadow: 0 6px 18px rgba(0, 0, 0, 0.09); }
+.block-icon {
+    width: 46px;
+    height: 46px;
+    margin-bottom: 12px;
+    border-radius: 15px;
+    background: #eef0ff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 23px;
+    line-height: 1;
+}
+.block-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-top: auto;
+    font-size: 16px;
+    font-weight: 700;
+    letter-spacing: -0.3px;
+}
+.block-sub { margin-top: 4px; color: #8a8f9c; font-size: 12.5px; line-height: 1.45; }
+.block-sub.strong { color: #4a4f5c; font-weight: 600; }
+
+.block.notice {
+    grid-column: 1 / -1;
+    flex-direction: row;
+    align-items: center;
+    gap: 14px;
+    min-height: 0;
+    padding: 16px;
+}
+.block.notice .thumb {
+    width: 78px;
+    height: 78px;
+    flex: 0 0 auto;
+    border-radius: 16px;
+    object-fit: cover;
+}
+.block.notice .thumb-empty {
+    width: 78px;
+    height: 78px;
+    flex: 0 0 auto;
+    border-radius: 16px;
+    background: #eef0ff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 30px;
+}
+.block.notice .notice-text { min-width: 0; flex: 1 1 auto; }
+.block.notice .block-title { margin-top: 0; }
+.block.notice .block-sub {
+    margin-top: 5px;
+    color: #4a4f5c;
+    font-size: 14px;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+.block.notice .block-meta { margin-top: 5px; color: #9aa0ac; font-size: 12px; }
+
+.block.admin .block-icon { background: #f1ecff; }
+.section-label {
+    margin: 24px 4px 10px;
+    color: #8a8f9c;
+    font-size: 12.5px;
+    font-weight: 700;
+    letter-spacing: 0.2px;
+}
+
+/* ---------- 카드 · 폼 ---------- */
 .card {
     background: #fff;
     border-radius: 16px;
@@ -156,7 +288,7 @@ button.ghost { background: #fff; color: #c0392b; border: 1px solid #f0c4bd; }
 button.gray { background: #eef0f4; color: #4a4f5c; }
 .wide { width: 100%; display: block; }
 
-.form-row { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
+.form-row { display: flex; gap: 8px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
 .form-row input { margin: 0; }
 .form-row button { flex: 0 0 auto; }
 
@@ -174,6 +306,7 @@ button.gray { background: #eef0f4; color: #4a4f5c; }
 .badge.off { background: #f0f1f5; color: #8a8f9c; }
 .badge.crown { background: #fff4d6; color: #b7791f; }
 .badge.today { background: #e6f7ee; color: #1e8f5b; }
+.badge.warn { background: #fdecea; color: #c0392b; }
 
 .muted { color: #7b818e; font-size: 13px; }
 .small { color: #777; font-size: 13px; margin: 8px 0 0; }
@@ -233,6 +366,69 @@ button.gray { background: #eef0f4; color: #4a4f5c; }
 .notice-card h3 { margin: 0 0 4px; font-size: 15px; }
 .notice-card .meta { color: #8a8f9c; font-size: 13px; margin: 0 0 10px; }
 
+/* 공지 이미지 */
+.notice-img {
+    display: block;
+    width: 100%;
+    max-width: 100%;
+    height: auto;
+    margin: 12px 0 6px;
+    border-radius: 14px;
+    border: 1px solid #eef0f4;
+    background: #f7f8fb;
+}
+.notice-img.small-thumb { width: 72px; height: 72px; object-fit: cover; margin: 10px 0 0; }
+
+.image-field { margin-top: 10px; }
+.file-pick {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 14px;
+    border-radius: 10px;
+    background: #eef0ff;
+    color: #5865f2;
+    font-size: 14px;
+    font-weight: 700;
+    cursor: pointer;
+}
+.file-pick:hover { background: #e3e7ff; }
+.file-pick input[type=file] {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: 0;
+    opacity: 0;
+    overflow: hidden;
+}
+.image-preview { display: flex; align-items: flex-start; gap: 10px; margin-top: 10px; }
+.image-preview[hidden] { display: none; }
+.image-preview img {
+    width: 108px;
+    height: 108px;
+    object-fit: cover;
+    border-radius: 12px;
+    border: 1px solid #e8ebf2;
+    background: #f7f8fb;
+}
+.image-current { display: flex; align-items: center; gap: 12px; margin-top: 10px; flex-wrap: wrap; }
+.image-current img {
+    width: 76px;
+    height: 76px;
+    object-fit: cover;
+    border-radius: 12px;
+    border: 1px solid #e8ebf2;
+}
+.check-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 14px;
+    color: #4a4f5c;
+}
+
 .week-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
 .week-grid .day { font-size: 13px; font-weight: 700; color: #555; text-align: center; }
 .week-grid select { padding: 11px 2px; margin: 4px 0 0; font-size: 14px; text-align: center; }
@@ -255,25 +451,372 @@ button.gray { background: #eef0f4; color: #4a4f5c; }
 
 .empty { color: #8a8f9c; font-size: 14px; margin: 10px 0 0; }
 
+/* ---------- 앱 설치 (PWA) ---------- */
+[hidden] { display: none !important; }
+.install-row { margin-top: 18px; }
+.install-open {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    background: #fff;
+    color: #5865f2;
+    border: 1px solid #dfe3ff;
+    border-radius: 16px;
+    padding: 15px 16px;
+    font-size: 15px;
+    font-weight: 700;
+    box-shadow: 0 3px 12px rgba(0, 0, 0, 0.05);
+}
+.install-open:hover { filter: none; background: #f7f8ff; }
+.install-modal {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+}
+.install-backdrop { position: absolute; inset: 0; background: rgba(20, 24, 40, 0.45); }
+.install-sheet {
+    position: relative;
+    width: 100%;
+    max-width: 430px;
+    background: #fff;
+    border-radius: 22px 22px 0 0;
+    padding: 18px 20px 22px;
+    box-shadow: 0 -6px 30px rgba(0, 0, 0, 0.18);
+}
+.install-grip {
+    width: 44px;
+    height: 5px;
+    margin: 0 auto 16px;
+    border-radius: 999px;
+    background: #e4e7ef;
+}
+.install-sheet h2 { margin: 0 0 6px; font-size: 19px; letter-spacing: -0.3px; }
+.install-desc { margin: 0 0 16px; color: #6b7180; font-size: 14px; line-height: 1.55; }
+.install-sheet .install-primary { margin-top: 4px; min-height: 48px; font-size: 16px; }
+.install-steps { margin: 14px 0 0; padding: 14px 16px; background: #f5f6fb; border-radius: 12px; }
+.install-steps ol { margin: 0; padding-left: 18px; color: #4a4f5c; font-size: 14px; line-height: 1.75; }
+.install-note { margin: 12px 0 0; color: #8a8f9c; font-size: 13px; line-height: 1.5; }
+.install-sheet .install-close {
+    margin-top: 12px;
+    background: #f1f3f8;
+    color: #4a4f5c;
+    min-height: 46px;
+}
+
+@media(min-width: 640px) {
+    .install-modal { align-items: center; }
+    .install-sheet { border-radius: 22px; }
+}
+
 @media(max-width: 860px) {
     .container.wide .slots { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media(max-width: 560px) {
-    .topbar-inner { padding: 10px 14px 8px; gap: 8px; }
-    .brand { font-size: 17px; }
-    .tabs { gap: 2px; }
-    .tab { padding: 6px 10px; font-size: 13px; }
-    .who { font-size: 13px; }
-    .container { padding: 0 12px; margin: 18px auto 36px; }
+    .topbar-inner { padding: 12px 14px; }
+    .brand { font-size: 18px; }
+    .who { font-size: 12.5px; }
+    .container { padding: 0 13px; margin: 14px auto 36px; }
     .card { padding: 16px; border-radius: 14px; }
     .slots, .container.wide .slots { grid-template-columns: 1fr; }
+    .blocks { gap: 10px; }
+    .block { min-height: 104px; padding: 14px; border-radius: 18px; }
+    .block-icon { width: 42px; height: 42px; border-radius: 13px; font-size: 21px; margin-bottom: 10px; }
+    .block.notice { padding: 14px; gap: 12px; }
+    .block.notice .thumb, .block.notice .thumb-empty { width: 64px; height: 64px; border-radius: 14px; }
     .week-grid { gap: 4px; }
     .week-grid select { font-size: 13px; padding: 10px 1px; }
     .week-grid .day { font-size: 12px; }
-    .page-head h1 { font-size: 21px; }
+    .dash-head h1 { font-size: 20px; }
 }
 """
+
+
+# 관리자 공지 폼: 고른 이미지를 캔버스로 줄여 hidden input 에 넣는다.
+IMAGE_JS = """
+(function () {
+  function loadImage(file) {
+    return new Promise(function (resolve, reject) {
+      var url = URL.createObjectURL(file);
+      var img = new Image();
+      img.onload = function () { URL.revokeObjectURL(url); resolve(img); };
+      img.onerror = function () { URL.revokeObjectURL(url); reject(new Error('read')); };
+      img.src = url;
+    });
+  }
+  function render(img, maxSide, quality) {
+    var srcW = img.naturalWidth || img.width;
+    var srcH = img.naturalHeight || img.height;
+    var scale = Math.min(1, maxSide / Math.max(srcW, srcH));
+    var w = Math.max(1, Math.round(srcW * scale));
+    var h = Math.max(1, Math.round(srcH * scale));
+    var canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    var ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, w, h);
+    ctx.drawImage(img, 0, 0, w, h);
+    return canvas.toDataURL('image/jpeg', quality);
+  }
+  async function shrink(file) {
+    var img = await loadImage(file);
+    var maxSide = 1080;
+    var quality = 0.82;
+    var data = render(img, maxSide, quality);
+    while (data.length > 350 * 1024 && (maxSide > 480 || quality > 0.4)) {
+      if (quality > 0.55) { quality -= 0.12; } else { maxSide = Math.round(maxSide * 0.85); quality = 0.7; }
+      data = render(img, maxSide, quality);
+    }
+    return data;
+  }
+  function kb(n) { return Math.round(n / 1024) + 'KB'; }
+
+  Array.prototype.forEach.call(document.querySelectorAll('form.notice-form'), function (form) {
+    var input = form.querySelector('input[type=file]');
+    var hidden = form.querySelector('input[name=image_data]');
+    var preview = form.querySelector('.image-preview');
+    var previewImg = preview ? preview.querySelector('img') : null;
+    var clear = form.querySelector('.image-clear');
+    var status = form.querySelector('.image-status');
+    var remove = form.querySelector('input[name=remove_image]');
+    if (!input || !hidden) return;
+
+    input.addEventListener('change', async function () {
+      var file = input.files && input.files[0];
+      if (!file) return;
+      if (!/^image\\//.test(file.type)) {
+        if (status) status.textContent = '이미지 파일만 올릴 수 있어요.';
+        input.value = '';
+        return;
+      }
+      if (status) status.textContent = '이미지 줄이는 중…';
+      try {
+        var data = await shrink(file);
+        if (data.length > 800 * 1024) {
+          if (status) status.textContent = '이미지가 너무 커요. 다른 사진을 골라 주세요.';
+          input.value = '';
+          return;
+        }
+        hidden.value = data;
+        if (previewImg) previewImg.src = data;
+        if (preview) preview.hidden = false;
+        if (remove) remove.checked = false;
+        if (status) status.textContent = '새 이미지 준비 완료 · ' + kb(data.length);
+      } catch (e) {
+        if (status) status.textContent = '이미지를 읽지 못했어요.';
+        input.value = '';
+      }
+    });
+
+    if (clear) clear.addEventListener('click', function () {
+      hidden.value = '';
+      input.value = '';
+      if (previewImg) previewImg.removeAttribute('src');
+      if (preview) preview.hidden = true;
+      if (status) status.textContent = '저장하면 새 이미지를 넣지 않아요.';
+    });
+  });
+})();
+"""
+
+IMAGE_MAX_CHARS = 800 * 1024
+IMAGE_PATTERN = re.compile(r"^data:image/(png|jpe?g|webp|gif);base64,([A-Za-z0-9+/=\s]+)$")
+
+
+def clean_image_data(raw: str) -> tuple[str, str]:
+    """공지 이미지 data URI 를 검증한다. (정리된 값, 오류 메시지)"""
+    value = (raw or "").strip()
+    if not value:
+        return "", ""
+    if len(value) > IMAGE_MAX_CHARS:
+        return "", "이미지가 너무 커요. 800KB 이하로 줄여 주세요."
+    match = IMAGE_PATTERN.match(value)
+    if not match:
+        return "", "이미지 형식이 올바르지 않아요. (PNG · JPG · WEBP · GIF)"
+    payload = re.sub(r"\s+", "", match.group(2))
+    try:
+        binary = base64.b64decode(payload, validate=True)
+    except (ValueError, binascii.Error):
+        return "", "이미지를 읽지 못했어요. 다시 선택해 주세요."
+    if not binary:
+        return "", "이미지가 비어 있어요."
+    return f"data:image/{match.group(1)};base64,{payload}", ""
+
+
+# PWA: 설치 가능한 웹앱 메타 tags 와 설치 버튼/패널 동작
+HEAD_TAGS = """
+<meta name="theme-color" content="#5865f2">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="온점핑">
+<meta name="mobile-web-app-capable" content="yes">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+<link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png">
+"""
+
+PWA_JS = """
+(function () {
+  if (window.__onjumpingPwa) return;
+  window.__onjumpingPwa = true;
+
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', function () {
+      navigator.serviceWorker.register('/sw.js').catch(function () {});
+    });
+  }
+
+  var deferred = null;
+  var installed = false;
+  window.addEventListener('beforeinstallprompt', function (event) {
+    event.preventDefault();
+    deferred = event;
+    refresh();
+  });
+  window.addEventListener('appinstalled', function () {
+    installed = true;
+    deferred = null;
+    refresh();
+  });
+
+  function el(id) { return document.getElementById(id); }
+  function standalone() {
+    return (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) ||
+           window.navigator.standalone === true;
+  }
+  function isIos() {
+    var ua = navigator.userAgent || '';
+    return /iPad|iPhone|iPod/.test(ua) ||
+           (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  }
+
+  function setSteps(html) {
+    var steps = el('install-steps');
+    if (!steps) return;
+    steps.innerHTML = html;
+    steps.hidden = !html;
+  }
+  function setNote(text) {
+    var note = el('install-note');
+    if (!note) return;
+    note.textContent = text || '';
+    note.hidden = !text;
+  }
+
+  function refresh() {
+    var action = el('install-action');
+    var desc = el('install-desc');
+    if (!action) return;
+    setSteps('');
+    setNote('');
+
+    if (standalone() || installed) {
+      action.hidden = true;
+      if (desc) desc.textContent = '이미 앱으로 실행 중이에요. 홈 화면의 온점핑 아이콘으로 열 수 있어요.';
+      return;
+    }
+    action.hidden = false;
+
+    if (deferred) {
+      action.textContent = '앱 설치하기 (PWA)';
+      if (desc) desc.textContent = '아래 버튼을 누르면 설치 확인 창이 열려요.';
+      return;
+    }
+    if (isIos()) {
+      action.textContent = '설치 방법 보기';
+      if (desc) desc.textContent = 'Safari에서는 아래 순서대로 홈 화면에 추가하면 앱처럼 쓸 수 있어요.';
+      setSteps('<ol><li>Safari 하단의 공유 버튼(□↑)을 누르세요.</li>' +
+               '<li>목록에서 <b>홈 화면에 추가</b>를 선택하세요.</li>' +
+               '<li>오른쪽 위 <b>추가</b>를 누르면 설치가 끝나요.</li></ol>');
+      return;
+    }
+    action.textContent = '앱 설치하기 (PWA)';
+    if (desc) desc.textContent = '브라우저 메뉴에서 설치할 수 있어요.';
+    setSteps('<ol><li>브라우저 오른쪽 위 메뉴(⋮ 또는 …)를 여세요.</li>' +
+             '<li><b>앱 설치</b> 또는 <b>홈 화면에 추가</b>를 선택하세요.</li>' +
+             '<li>화면 안내에 따라 설치를 마치세요.</li></ol>');
+    setNote('설치 창이 바로 뜨지 않으면 잠시 뒤 다시 눌러 주세요. (HTTPS에서만 설치할 수 있어요)');
+  }
+
+  function open() {
+    var modal = el('install-modal');
+    if (!modal) return;
+    modal.hidden = false;
+    document.body.style.overflow = 'hidden';
+    refresh();
+  }
+  function close() {
+    var modal = el('install-modal');
+    if (!modal) return;
+    modal.hidden = true;
+    document.body.style.overflow = '';
+  }
+
+  document.addEventListener('click', function (event) {
+    var target = event.target;
+    if (!(target instanceof Element)) return;
+    if (target.closest('[data-install-open]')) { open(); return; }
+    if (target.closest('[data-install-close]')) { close(); return; }
+    if (target.closest('#install-action')) {
+      if (!deferred) { refresh(); return; }
+      var promptEvent = deferred;
+      deferred = null;
+      promptEvent.prompt();
+      if (promptEvent.userChoice && promptEvent.userChoice.then) {
+        promptEvent.userChoice.then(function (choice) {
+          setNote(choice && choice.outcome === 'accepted'
+            ? '설치를 시작했어요. 홈 화면에서 온점핑을 확인해 주세요.'
+            : '설치를 취소했어요. 나중에 다시 설치할 수 있어요.');
+          refresh();
+        }).catch(function () {});
+      }
+    }
+  });
+
+  document.addEventListener('keydown', function (event) {
+    if (event.key === 'Escape') close();
+  });
+})();
+"""
+
+
+def install_button(label: str = "📲 앱 다운로드") -> str:
+    return f'<button class="install-open" type="button" data-install-open>{label}</button>'
+
+
+def install_modal() -> str:
+    return """
+<div class="install-modal" id="install-modal" hidden>
+    <div class="install-backdrop" data-install-close></div>
+    <div class="install-sheet" role="dialog" aria-modal="true" aria-label="온점핑 앱 설치">
+        <div class="install-grip"></div>
+        <h2>온점핑 앱 설치</h2>
+        <p class="install-desc" id="install-desc">홈 화면에 설치하면 앱처럼 전체 화면으로 바로 열 수 있어요.</p>
+        <button class="wide install-primary" type="button" id="install-action">앱 설치하기 (PWA)</button>
+        <div class="install-steps" id="install-steps" hidden></div>
+        <p class="install-note" id="install-note" hidden></p>
+        <button class="wide install-close" type="button" data-install-close>닫기</button>
+    </div>
+</div>"""
+
+
+# 정적 PWA 파일 (매니페스트 · 서비스 워커 · 아이콘)
+STATIC_DIR = Path(__file__).resolve().parent / "static"
+STATIC_FILES = {
+    "/manifest.webmanifest": ("manifest.webmanifest", "application/manifest+json; charset=utf-8",
+                              "public, max-age=3600"),
+    "/sw.js": ("sw.js", "application/javascript; charset=utf-8", "no-cache"),
+    "/icons/icon-192.png": ("icons/icon-192.png", "image/png", "public, max-age=86400"),
+    "/icons/icon-512.png": ("icons/icon-512.png", "image/png", "public, max-age=86400"),
+    "/icons/apple-touch-icon.png": ("icons/apple-touch-icon.png", "image/png", "public, max-age=86400"),
+    "/favicon.ico": ("icons/icon-192.png", "image/png", "public, max-age=86400"),
+}
 
 
 # --------------------------------------------------------------------------- #
@@ -311,10 +854,11 @@ class Response:
         headers = [
             ("Content-Type", self.ctype),
             ("Content-Length", str(len(self.body))),
-            ("Cache-Control", "no-store"),
             ("X-Content-Type-Options", "nosniff"),
             ("Referrer-Policy", "same-origin"),
         ]
+        if not any(name.lower() == "cache-control" for name, _ in self.headers):
+            headers.append(("Cache-Control", "no-store"))
         headers.extend(self.headers)
         for name, (value, max_age) in self.cookies.items():
             attrs = f"{name}={value}; Path=/; Max-Age={max_age}; SameSite=Lax"
@@ -332,6 +876,23 @@ def redirect(location: str, flash: str | None = None, error: bool = False) -> Re
     resp = Response("", 303).header("Location", location)
     if flash:
         resp.set_flash(flash, error)
+    return resp
+
+
+def static_response(path: str) -> Response | None:
+    """매니페스트 · 서비스 워커 · 아이콘을 파일에서 읽어 준다. 없으면 None."""
+    spec = STATIC_FILES.get(path)
+    if not spec:
+        return None
+    rel, ctype, cache = spec
+    try:
+        data = (STATIC_DIR / rel).read_bytes()
+    except OSError:
+        return None
+    resp = Response(data, 200, ctype)
+    resp.header("Cache-Control", cache)
+    if path == "/sw.js":
+        resp.header("Service-Worker-Allowed", "/")
     return resp
 
 
@@ -392,6 +953,15 @@ def read_flash(environ) -> tuple[str, bool]:
 
 
 def read_form(environ) -> dict[str, list[str]]:
+    """application/x-www-form-urlencoded 본문만 읽는다.
+
+    공지 이미지는 JS 가 줄인 data URI 를 hidden input 으로 보내므로 폼은 항상
+    urlencoded 다. multipart 로 들어온 요청은 읽지 않고 빈 폼으로 두어, 내용
+    없이 저장되어 공지가 지워지는 일이 없게 한다.
+    """
+    ctype = (environ.get("CONTENT_TYPE") or "").lower()
+    if ctype.startswith("multipart/"):
+        return {}
     try:
         length = int(environ.get("CONTENT_LENGTH") or 0)
     except ValueError:
@@ -406,57 +976,52 @@ def read_form(environ) -> dict[str, list[str]]:
 # 공통 HTML
 # --------------------------------------------------------------------------- #
 
-MEMBER_TABS = [
-    ("checkin", "/checkin", "출석하기"),
-    ("notices", "/notices", "공지"),
-    ("auto", "/auto", "자동출석"),
-]
-ADMIN_TABS = [
-    ("admin", "/admin", "출석·휴강"),
-    ("admin-notices", "/admin/notices", "공지 관리"),
-    ("admin-users", "/admin/users", "회원"),
-    ("admin-users-new", "/admin/users/new", "회원 추가"),
-]
-
-
-def header(user: dict | None, active: str | None) -> str:
-    tabs = []
-    for key, href, label in (MEMBER_TABS if user else []):
-        cls = "tab active" if key == active else "tab"
-        tabs.append(f'<a class="{cls}" href="{href}">{label}</a>')
-    if user and user["is_admin"]:
-        for key, href, label in ADMIN_TABS:
-            cls = "tab admin active" if key == active else "tab admin"
-            tabs.append(f'<a class="{cls}" href="{href}">{label}</a>')
-
+def header(user: dict | None, wide: bool = False) -> str:
+    """홈 상단 바. 앱 이름과 사용자·로그아웃만 두고 메뉴 탭은 두지 않는다."""
     who = ""
     if user:
         who = (
-            f'<div class="who"><span>{esc(user["nickname"])}님</span>'
+            f'<div class="who"><b>{esc(user["nickname"])}</b>님'
             f'<a href="/logout">로그아웃</a></div>'
         )
+    cls = "topbar wide" if wide else "topbar"
     return (
-        '<header class="topbar"><div class="topbar-inner">'
-        '<a class="brand" href="/">🏃 On점핑 출석</a>'
-        f'<nav class="tabs">{"".join(tabs)}</nav>'
+        f'<header class="{cls}"><div class="topbar-inner">'
+        '<a class="brand" href="/">🏃 온점핑</a>'
         f'{who}'
         "</div></header>"
     )
 
 
-def page(content: str, *, title: str = "On점핑 출석", user: dict | None = None,
-         active: str | None = None, flash: str = "", error: bool = False, wide: bool = False) -> str:
+def app_bar(title: str, wide: bool = False) -> str:
+    """서브 화면 상단 앱바. 홈으로 가는 ← 뒤로와 화면 제목만 둔다."""
+    cls = "appbar wide" if wide else "appbar"
+    return (
+        f'<header class="{cls}"><div class="appbar-inner">'
+        '<a class="back" href="/">← <span>뒤로</span></a>'
+        f'<h1>{esc(title)}</h1>'
+        "</div></header>"
+    )
+
+
+def page(content: str, *, title: str = "온점핑 출석", user: dict | None = None,
+         flash: str = "", error: bool = False, wide: bool = False,
+         appbar_title: str | None = None, script: str = "") -> str:
     flash_html = ""
     if flash:
         flash_html = f'<div class="message{" error" if error else ""}">{esc(flash)}</div>'
     container = 'class="container wide"' if wide else 'class="container"'
+    head = app_bar(appbar_title, wide) if appbar_title else header(user, wide)
+    script_html = f"<script>{PWA_JS}\n{script}</script>\n"
     return (
         "<!DOCTYPE html>\n"
         '<html lang="ko">\n<head>\n<meta charset="UTF-8">\n'
-        '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+        '<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">\n'
+        f"{HEAD_TAGS}"
         f"<title>{esc(title)}</title>\n<style>{CSS}</style>\n</head>\n<body>\n"
-        f"{header(user, active)}\n"
+        f"{head}\n"
         f"<main {container}>\n{flash_html}\n{content}\n</main>\n"
+        f"{script_html}"
         "</body>\n</html>\n"
     )
 
@@ -466,9 +1031,24 @@ def date_label(day: str) -> str:
     return f"{d.year}년 {d.month}월 {d.day}일 {store.WEEKDAY_KO[store.WEEKDAYS[d.weekday()]]}요일"
 
 
-def page_head(title: str, subtitle: str = "") -> str:
-    sub = f"<p>{esc(subtitle)}</p>" if subtitle else ""
-    return f'<div class="page-head"><h1>{esc(title)}</h1>{sub}</div>'
+def page_note(text: str) -> str:
+    return f'<p class="page-note">{esc(text)}</p>'
+
+
+def notice_image(notice: dict | None, cls: str = "notice-img") -> str:
+    """공지 첨부 이미지. 없으면 빈 문자열."""
+    data = (notice or {}).get("image_data") or ""
+    if not data:
+        return ""
+    return f'<img class="{cls}" src="{esc(data)}" alt="공지 이미지">'
+
+
+def preview_text(text: str, limit: int = 70) -> str:
+    """블록에 넣을 한두 줄 미리보기."""
+    line = " ".join((text or "").split())
+    if len(line) <= limit:
+        return line
+    return line[: limit - 1].rstrip() + "…"
 
 
 # --------------------------------------------------------------------------- #
@@ -492,13 +1072,16 @@ def render_login(flash: str = "", error: bool = False) -> Response:
         </form>
         <p class="small">계정은 관리자에게 문의해 주세요.</p>
     </div>
+    <div class="install-row">{install_button()}</div>
 </div>
+{install_modal()}
 """
     return Response(
         "<!DOCTYPE html>\n<html lang=\"ko\">\n<head>\n<meta charset=\"UTF-8\">\n"
-        '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
-        f"<title>로그인 · On점핑 출석</title>\n<style>{CSS}</style>\n</head>\n<body>\n"
-        f"{header(None, None)}\n<main class=\"container\">{content}</main>\n"
+        '<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">\n'
+        f"{HEAD_TAGS}<title>로그인 · 온점핑 출석</title>\n<style>{CSS}</style>\n</head>\n<body>\n"
+        f"{header(None)}\n<main class=\"container\">{content}</main>\n"
+        f"<script>{PWA_JS}</script>\n"
         "</body>\n</html>\n"
     )
 
@@ -518,7 +1101,128 @@ def _people_chips(people: list[dict], me_id: int) -> str:
     return f'<div class="people">{"".join(chips)}</div>'
 
 
+def _weekday_groups(user: dict) -> list[tuple[str | None, list[str]]]:
+    groups: list[tuple[str | None, list[str]]] = []
+    for key in store.WEEKDAY_KEYS:
+        slot_id = user["weekly"].get(key)
+        if groups and groups[-1][0] == slot_id:
+            groups[-1][1].append(key)
+        else:
+            groups.append((slot_id, [key]))
+    return groups
+
+
+def _days_label(days: list[str]) -> str:
+    if len(days) == 1:
+        return store.WEEKDAY_KO[days[0]]
+    if len(days) == 2:
+        return store.WEEKDAY_KO[days[0]] + store.WEEKDAY_KO[days[1]]
+    return store.WEEKDAY_KO[days[0]] + "~" + store.WEEKDAY_KO[days[-1]]
+
+
+def weekly_summary(user: dict) -> str:
+    chunks = []
+    for slot_id, days in _weekday_groups(user):
+        time = store.slot_info(slot_id)["time"] if slot_id in store.SLOT_BY_ID else "쉼"
+        chunks.append(f"{_days_label(days)} {time}")
+    return " · ".join(chunks)
+
+
+def _block(href: str, icon: str, title: str, sub: str = "", badge_label: str = "",
+           badge_class: str = "", extra: str = "") -> str:
+    badge = (f' <span class="badge {badge_class}">{esc(badge_label)}</span>'
+             if badge_label else "")
+    sub_html = f'<div class="block-sub">{esc(sub)}</div>' if sub else ""
+    return (
+        f'<a class="block{extra}" href="{href}">'
+        f'<div class="block-icon">{icon}</div>'
+        f'<div class="block-title">{esc(title)}{badge}</div>'
+        f"{sub_html}</a>"
+    )
+
+
 def render_index(user: dict, flash: str = "", error: bool = False) -> Response:
+    """홈: 안드로이드 앱 홈처럼 큰 블록(타일)로 메뉴를 보여 준다. 네비게이션 바 없음."""
+    today = store.kst_today()
+    state = store.get_day(today)
+    rows = store.list_attendance(today)
+    mine_by_slot = {row["slot_id"]: row for row in rows if row["user_id"] == user["id"]}
+    notices = store.list_notices()
+    latest = notices[0] if notices else None
+
+    parts = [f"""
+<div class="dash-head">
+    <h1>{esc(user['nickname'])}님, 반가워요 👋</h1>
+    <p>{esc(date_label(today))}</p>
+</div>"""]
+
+    if state["closed_all"]:
+        parts.append('<div class="banner">🚫 오늘은 전체 휴강입니다.</div>')
+
+    # 공지 블록: 최신 공지 요약 (이미지가 있으면 썸네일)
+    if latest:
+        thumb = notice_image(latest, "thumb") or '<div class="thumb-empty">📢</div>'
+        parts.append(f"""
+<a class="block notice" href="/notices">
+    {thumb}
+    <div class="notice-text">
+        <div class="block-title">공지사항</div>
+        <div class="block-sub">{esc(preview_text(latest['body']))}</div>
+        <div class="block-meta">{esc(latest['posted_on'])} · {esc(latest['author'])}</div>
+    </div>
+</a>""")
+    else:
+        parts.append("""
+<a class="block notice" href="/notices">
+    <div class="thumb-empty">📢</div>
+    <div class="notice-text">
+        <div class="block-title">공지사항</div>
+        <div class="block-sub">아직 올라온 공지가 없어요.</div>
+    </div>
+</a>""")
+
+    if state["closed_all"]:
+        badge_label, badge_class = "휴강", "off"
+        checkin_sub = "오늘은 전체 휴강이에요"
+    elif mine_by_slot:
+        first = next(s for s in state["slots"] if s["id"] in mine_by_slot)
+        extra = len(mine_by_slot) - 1
+        badge_label, badge_class = "출석함", "today"
+        checkin_sub = f"{first['time']} {first['name']} 출석 완료" + (f" 외 {extra}개" if extra else "")
+    else:
+        badge_label, badge_class = "출석 전", "off"
+        open_times = " · ".join(s["time"] for s in state["slots"] if s["open"])
+        checkin_sub = "타임을 골라 출석해요" + (f" ({open_times})" if open_times else " (지금은 열린 타임이 없어요)")
+
+    parts.append(
+        '<div class="blocks">'
+        + _block("/checkin", "✅", "출석하기", checkin_sub, badge_label, badge_class)
+        + _block("/auto", "🗓️", "자동 출석", "평일 " + weekly_summary(user))
+        + "</div>"
+    )
+
+    if user["is_admin"]:
+        parts.append('<div class="section-label">관리자</div>')
+        parts.append(
+            '<div class="blocks">'
+            + _block("/admin", "🧑‍🏫", "출석·휴강", "오늘 명단과 휴강 관리", extra=" admin")
+            + _block("/admin/notices", "📢", "공지 관리", "공지 올리기·수정", extra=" admin")
+            + _block("/admin/users", "👥", "유저 관리", "회원 목록·삭제", extra=" admin")
+            + _block("/admin/users/new", "➕", "유저 생성", "새 계정 만들기", extra=" admin")
+            + "</div>"
+        )
+
+    parts.append(f'<div class="install-row">{install_button()}</div>')
+    parts.append(install_modal())
+
+    return Response(page("\n".join(parts), title="온점핑", user=user, flash=flash, error=error))
+
+
+# --------------------------------------------------------------------------- #
+# 회원: 출석 /checkin
+# --------------------------------------------------------------------------- #
+
+def render_checkin(user: dict, flash: str = "", error: bool = False) -> Response:
     today = store.kst_today()
     state = store.get_day(today)
     rows = store.list_attendance(today)
@@ -528,15 +1232,21 @@ def render_index(user: dict, flash: str = "", error: bool = False) -> Response:
     for row in rows:
         by_slot.setdefault(row["slot_id"], []).append(row)
 
-    parts = [page_head("출석하기", f"{date_label(today)} · 타임마다 11명 선착순")]
+    parts = [page_note(f"{date_label(today)} · 타임마다 11명 선착순")]
 
-    today_notice = next((n for n in store.list_notices() if n["posted_on"] == today), None)
-    if today_notice:
+    notices = store.list_notices()
+    shown = next((n for n in notices if n["posted_on"] == today), None)
+    if shown is None and notices:
+        shown = notices[0]
+    if shown:
+        heading = "📢 오늘의 공지" if shown["posted_on"] == today else "📢 최근 공지"
+        badge = ' <span class="badge today">오늘</span>' if shown["posted_on"] == today else ""
         parts.append(f"""
 <div class="card">
-    <h2>📢 오늘의 공지</h2>
-    <p class="notice-body">{esc(today_notice['body'])}</p>
-    <p class="small">{esc(today_notice['author'])} · {today_notice['posted_on']}</p>
+    <h2>{heading}{badge}</h2>
+    <p class="notice-body">{esc(shown['body'])}</p>
+    {notice_image(shown)}
+    <p class="small">{esc(shown['author'])} · {shown['posted_on']}</p>
 </div>""")
     else:
         parts.append("""
@@ -621,18 +1331,8 @@ def render_index(user: dict, flash: str = "", error: bool = False) -> Response:
 </section>""")
     parts.append(f'<div class="slots">{"".join(cards)}</div>')
 
-    parts.append(f"""
-<div class="card">
-    <h2>🗓️ 자동 출석 · 지난 공지</h2>
-    <p class="small">자동 출석 설정과 지난 공지 목록은 각각 따로 있어요.</p>
-    <div class="form-row">
-        <a class="button small soft" href="/auto">자동 출석 설정</a>
-        <a class="button small soft" href="/notices">공지 목록</a>
-    </div>
-</div>""")
-
-    return Response(page("\n".join(parts), title="출석하기 · On점핑 출석",
-                         user=user, active="checkin", flash=flash, error=error))
+    return Response(page("\n".join(parts), title="출석하기 · 온점핑 출석", user=user,
+                         appbar_title="출석하기", flash=flash, error=error))
 
 
 # --------------------------------------------------------------------------- #
@@ -645,12 +1345,13 @@ def render_notices(user: dict, flash: str = "", error: bool = False) -> Response
     today_notice = next((n for n in notices if n["posted_on"] == today), None)
     others = [n for n in notices if n is not today_notice]
 
-    parts = [page_head("공지", "오늘의 공지와 지난 공지 목록")]
+    parts = [page_note("오늘의 공지와 지난 공지 목록")]
     if today_notice:
         parts.append(f"""
 <div class="card">
     <h2>📢 오늘의 공지 <span class="badge today">오늘</span></h2>
     <p class="notice-body">{esc(today_notice['body'])}</p>
+    {notice_image(today_notice)}
     <p class="small">{esc(today_notice['author'])} · {today_notice['posted_on']}</p>
 </div>""")
     else:
@@ -665,11 +1366,12 @@ def render_notices(user: dict, flash: str = "", error: bool = False) -> Response
     <h3>{notice['posted_on']}</h3>
     <p class="meta">{esc(notice['author'])}</p>
     <p class="notice-body">{esc(notice['body'])}</p>
+    {notice_image(notice)}
 </div>""")
         parts.append('<h2 style="margin:22px 4px 12px;font-size:17px">지난 공지</h2>' + "".join(rows))
 
-    return Response(page("\n".join(parts), title="공지 · On점핑 출석", user=user, active="notices",
-                         flash=flash, error=error))
+    return Response(page("\n".join(parts), title="공지사항 · 온점핑 출석", user=user,
+                         appbar_title="공지사항", flash=flash, error=error))
 
 
 # --------------------------------------------------------------------------- #
@@ -696,7 +1398,7 @@ def render_auto(user: dict, flash: str = "", error: bool = False) -> Response:
         </div>"""
 
     parts = [
-        page_head("자동 출석", "평일(월~금)에 밴드 대신 잡아 둘 타임을 정해 두세요"),
+        page_note("평일(월~금)에 밴드 대신 잡아 둘 타임을 정해 두세요"),
         f"""
 <div class="card">
     <h2>🗓️ 평일 자동 출석</h2>
@@ -720,8 +1422,8 @@ def render_auto(user: dict, flash: str = "", error: bool = False) -> Response:
     </form>
 </div>""",
     ]
-    return Response(page("\n".join(parts), title="자동 출석 · On점핑 출석", user=user, active="auto",
-                         flash=flash, error=error))
+    return Response(page("\n".join(parts), title="자동 출석 · 온점핑 출석", user=user,
+                         appbar_title="자동 출석", flash=flash, error=error))
 
 
 # --------------------------------------------------------------------------- #
@@ -746,7 +1448,7 @@ def render_admin(user: dict, flash: str = "", error: bool = False) -> Response:
         <input type="checkbox" name="blocked" value="{slot["id"]}"{checked} aria-label="{slot["time"]} 휴강">
     </label>"""
 
-    parts = [page_head("출석·휴강", f"{date_label(today)} · 전체 {len(rows)}명 출석")]
+    parts = [page_note(f"{date_label(today)} · 전체 {len(rows)}명 출석")]
     parts.append(f"""
 <div class="card">
     <h2>🚫 휴강 제어</h2>
@@ -792,13 +1494,37 @@ def render_admin(user: dict, flash: str = "", error: bool = False) -> Response:
 </section>""")
     parts.append(f'<div class="slots">{"".join(cards)}</div>')
 
-    return Response(page("\n".join(parts), title="출석·휴강 · On점핑 출석",
-                         user=user, active="admin", flash=flash, error=error, wide=True))
+    return Response(page("\n".join(parts), title="출석·휴강 · 온점핑 출석",
+                         user=user, appbar_title="출석·휴강", flash=flash, error=error, wide=True))
 
 
 # --------------------------------------------------------------------------- #
 # 관리자: 공지 관리 /admin/notices
 # --------------------------------------------------------------------------- #
+
+def _image_fields(notice: dict | None) -> str:
+    """공지 폼의 이미지 선택 · 미리보기 · 기존 이미지 삭제 UI."""
+    image = (notice or {}).get("image_data") or ""
+    current = ""
+    if image:
+        current = f"""
+    <div class="image-current">
+        <img src="{esc(image)}" alt="첨부된 공지 이미지">
+        <label class="check-row"><input type="checkbox" name="remove_image" value="1"> 이 이미지 지우기</label>
+    </div>"""
+    return f"""
+    <div class="image-field">
+        <label class="file-pick">🖼️ 이미지 선택
+            <input type="file" accept="image/*">
+        </label>
+        <input type="hidden" name="image_data" value="">
+        <p class="small image-status">사진을 고르면 자동으로 줄여서 올려요. (긴 변 1080px · 400KB 이하)</p>
+        <div class="image-preview" hidden>
+            <img alt="새 이미지 미리보기">
+            <button type="button" class="small gray image-clear">빼기</button>
+        </div>
+    </div>{current}"""
+
 
 def render_admin_notices(user: dict, flash: str = "", error: bool = False) -> Response:
     today = store.kst_today()
@@ -806,15 +1532,16 @@ def render_admin_notices(user: dict, flash: str = "", error: bool = False) -> Re
     today_notice = next((n for n in notices if n["posted_on"] == today), None)
     value = esc(today_notice["body"]) if today_notice else ""
 
-    parts = [page_head("공지 관리", "오늘의 공지 등록과 지난 공지 수정·삭제")]
+    parts = [page_note("오늘의 공지 등록과 지난 공지 수정·삭제 · 이미지 첨부 가능")]
     parts.append(f"""
 <div class="card">
     <h2>📢 오늘의 공지</h2>
-    <form method="POST" action="/admin/notices">
+    <form class="notice-form" method="POST" action="/admin/notices">
         <textarea name="body" placeholder="오늘의 공지를 입력하세요" required>{value}</textarea>
+        {_image_fields(today_notice)}
         <button class="wide" style="margin-top:8px">{"공지 수정" if today_notice else "공지 등록"}</button>
     </form>
-    <p class="small">하루에 한 건입니다. 오늘 공지를 다시 저장하면 내용만 바뀝니다.</p>
+    <p class="small">하루에 한 건입니다. 오늘 공지를 다시 저장하면 내용만 바뀝니다. 이미지를 새로 고르지 않으면 기존 이미지가 그대로 남아요.</p>
 </div>""")
 
     if notices:
@@ -825,8 +1552,9 @@ def render_admin_notices(user: dict, flash: str = "", error: bool = False) -> Re
 <div class="card notice-card">
     <h3>{notice['posted_on']}{badge}</h3>
     <p class="meta">{esc(notice['author'])} · 수정 {notice['updated_at'][:16].replace('T', ' ')}</p>
-    <form method="POST" action="/admin/notices/{notice['id']}">
+    <form class="notice-form" method="POST" action="/admin/notices/{notice['id']}">
         <textarea name="body" required>{esc(notice['body'])}</textarea>
+        {_image_fields(notice)}
         <button class="wide" style="margin-top:8px">저장</button>
     </form>
     <form method="POST" action="/admin/notices/{notice['id']}/delete" style="margin-top:8px">
@@ -837,8 +1565,9 @@ def render_admin_notices(user: dict, flash: str = "", error: bool = False) -> Re
     else:
         parts.append('<div class="card"><p class="empty">등록된 공지가 없습니다.</p></div>')
 
-    return Response(page("\n".join(parts), title="공지 관리 · On점핑 출석", user=user,
-                         active="admin-notices", flash=flash, error=error, wide=True))
+    return Response(page("\n".join(parts), title="공지 관리 · 온점핑 출석", user=user,
+                         appbar_title="공지 관리", flash=flash, error=error, wide=True,
+                         script=IMAGE_JS))
 
 
 # --------------------------------------------------------------------------- #
@@ -869,7 +1598,7 @@ def render_admin_users(user: dict, flash: str = "", error: bool = False) -> Resp
     </div>"""
 
     parts = [
-        page_head("회원", f"전체 {len(users)}명"),
+        page_note(f"전체 {len(users)}명"),
         """
 <div class="card">
     <div class="slot-head">
@@ -879,13 +1608,13 @@ def render_admin_users(user: dict, flash: str = "", error: bool = False) -> Resp
     <div style="margin-top:8px">%s</div>
 </div>""" % rows_html,
     ]
-    return Response(page("\n".join(parts), title="회원 관리 · On점핑 출석", user=user,
-                         active="admin-users", flash=flash, error=error, wide=True))
+    return Response(page("\n".join(parts), title="회원 관리 · 온점핑 출석", user=user,
+                         appbar_title="회원 관리", flash=flash, error=error, wide=True))
 
 
 def render_admin_user_new(user: dict, flash: str = "", error: bool = False) -> Response:
     parts = [
-        page_head("회원 추가", "새 회원 계정을 만듭니다. 만든 뒤 회원 목록에서 확인할 수 있어요."),
+        page_note("새 회원 계정을 만듭니다. 만든 뒤 회원 목록에서 확인할 수 있어요."),
         """
 <div class="card">
     <h2>➕ 회원 만들기</h2>
@@ -900,8 +1629,8 @@ def render_admin_user_new(user: dict, flash: str = "", error: bool = False) -> R
     <p class="small"><a href="/admin/users">← 회원 목록으로</a></p>
 </div>""",
     ]
-    return Response(page("\n".join(parts), title="회원 추가 · On점핑 출석", user=user,
-                         active="admin-users-new", flash=flash, error=error, wide=True))
+    return Response(page("\n".join(parts), title="회원 추가 · 온점핑 출석", user=user,
+                         appbar_title="회원 추가", flash=flash, error=error, wide=True))
 
 
 # --------------------------------------------------------------------------- #
@@ -920,6 +1649,11 @@ def route(method: str, path: str, form: dict[str, list[str]], user: dict | None,
           flash_error: bool) -> Response:
     if path == "/health":
         return Response("OK", 200, "text/plain; charset=utf-8")
+
+    # ---- PWA 정적 파일 (매니페스트 · 서비스 워커 · 아이콘) ----
+    asset = static_response(path)
+    if asset is not None:
+        return asset
 
     # ---- 로그인 / 로그아웃 ----
     if path == "/login":
@@ -940,11 +1674,16 @@ def route(method: str, path: str, form: dict[str, list[str]], user: dict | None,
         return resp.clear_cookie(COOKIE)
 
     # ---- 회원 화면 ----
-    if path in ("/", "/index.html", "/checkin"):
+    if path in ("/", "/index.html"):
         if method == "GET":
             if not user:
                 return redirect("/login")
             return render_index(user, flash, flash_error)
+
+    if path == "/checkin" and method == "GET":
+        if not user:
+            return redirect("/login")
+        return render_checkin(user, flash, flash_error)
 
     if path == "/notices" and method == "GET":
         if not user:
@@ -976,8 +1715,8 @@ def route(method: str, path: str, form: dict[str, list[str]], user: dict | None,
         try:
             store.check_in(user["id"], store.kst_today(), slot_id)
         except store.CheckinError as exc:
-            return redirect("/", exc.message, error=True)
-        return redirect("/", f"{store.slot_info(slot_id)['time']} 출석 완료!")
+            return redirect("/checkin", exc.message, error=True)
+        return redirect("/checkin", f"{store.slot_info(slot_id)['time']} 출석 완료!")
 
     match = re.fullmatch(r"/checkin/cancel/(\d+)", path)
     if match and method == "POST":
@@ -985,11 +1724,11 @@ def route(method: str, path: str, form: dict[str, list[str]], user: dict | None,
             return redirect("/login")
         record = store.get_attendance(int(match.group(1)))
         if record is None:
-            return redirect("/", "출석 기록을 찾을 수 없습니다.", error=True)
+            return redirect("/checkin", "출석 기록을 찾을 수 없습니다.", error=True)
         if record["user_id"] != user["id"] and not user["is_admin"]:
-            return redirect("/", "본인 출석만 취소할 수 있어요.", error=True)
+            return redirect("/checkin", "본인 출석만 취소할 수 있어요.", error=True)
         store.cancel_checkin(record["id"])
-        back = "/admin" if user["is_admin"] and record["user_id"] != user["id"] else "/"
+        back = "/admin" if user["is_admin"] and record["user_id"] != user["id"] else "/checkin"
         return redirect(back, "출석을 취소했어요.")
 
     # ---- 관리자 화면 ----
@@ -1029,7 +1768,12 @@ def route(method: str, path: str, form: dict[str, list[str]], user: dict | None,
                 body = form_value(form, "body")
                 if not body:
                     return redirect("/admin/notices", "공지 내용을 입력해 주세요.", error=True)
-                store.set_notice(body, user["nickname"], store.kst_today())
+                image, image_error = clean_image_data(form_value(form, "image_data"))
+                if image_error:
+                    return redirect("/admin/notices", image_error, error=True)
+                remove = "1" in (form.get("remove_image") or [])
+                new_image = image if image else ("" if remove else None)
+                store.set_notice(body, user["nickname"], store.kst_today(), image_data=new_image)
                 return redirect("/admin/notices", "오늘의 공지를 저장했어요.")
             return render_admin_notices(user, flash, flash_error)
 
@@ -1038,7 +1782,12 @@ def route(method: str, path: str, form: dict[str, list[str]], user: dict | None,
             body = form_value(form, "body")
             if not body:
                 return redirect("/admin/notices", "공지 내용을 입력해 주세요.", error=True)
-            if not store.update_notice(int(match.group(1)), body):
+            image, image_error = clean_image_data(form_value(form, "image_data"))
+            if image_error:
+                return redirect("/admin/notices", image_error, error=True)
+            remove = "1" in (form.get("remove_image") or [])
+            new_image = image if image else ("" if remove else None)
+            if not store.update_notice(int(match.group(1)), body, image_data=new_image):
                 return redirect("/admin/notices", "공지를 찾을 수 없습니다.", error=True)
             return redirect("/admin/notices", "공지를 수정했어요.")
 

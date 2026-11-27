@@ -112,6 +112,31 @@ class StoreTest(unittest.TestCase):
         store.reset_cache()
         self.assertIsNone(store.get_notice(notice["id"]))
 
+    def test_notice_image_round_trip(self):
+        notice = store.set_notice("사진 공지", "관리자")
+        self.assertEqual(notice["image_data"], "")
+
+        image = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+        store.update_notice(notice["id"], "사진 공지", image_data=image)
+        store.reset_cache()
+        self.assertEqual(store.get_notice(notice["id"])["image_data"], image)
+        self.assertEqual(store.latest_notice()["image_data"], image)
+
+        # image_data=None 이면 기존 이미지를 그대로 둔다
+        store.update_notice(notice["id"], "본문만 고침")
+        store.reset_cache()
+        self.assertEqual(store.get_notice(notice["id"])["image_data"], image)
+
+        # 빈 문자열이면 지운다
+        store.update_notice(notice["id"], "사진 빠짐", image_data="")
+        store.reset_cache()
+        self.assertEqual(store.get_notice(notice["id"])["image_data"], "")
+        self.assertNotIn("image_data", store._decode(store._backend().load_raw())["notices"][0])
+
+        store.delete_notice(notice["id"])
+        store.reset_cache()
+        self.assertIsNone(store.get_notice(notice["id"]))
+
     def test_admin_password_comes_from_env_only(self):
         admin = store.authenticate("admin", ADMIN_PASSWORD)
         self.assertIsNotNone(admin)

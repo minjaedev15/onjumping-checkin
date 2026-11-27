@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 import secrets
 import sys
@@ -44,13 +45,16 @@ class Client:
     def __init__(self):
         self.cookies: dict[str, str] = {}
 
-    def request(self, method: str, path: str, form: dict | None = None):
-        body = urllib.parse.urlencode(form, doseq=True).encode("utf-8") if form else b""
+    def request(self, method: str, path: str, form: dict | None = None,
+                raw: bytes | None = None, ctype: str = "application/x-www-form-urlencoded",
+                decode: bool = True):
+        body = raw if raw is not None else (
+            urllib.parse.urlencode(form, doseq=True).encode("utf-8") if form else b"")
         environ = {
             "REQUEST_METHOD": method.upper(),
             "PATH_INFO": path.split("?")[0],
             "QUERY_STRING": path.split("?", 1)[1] if "?" in path else "",
-            "CONTENT_TYPE": "application/x-www-form-urlencoded",
+            "CONTENT_TYPE": ctype,
             "CONTENT_LENGTH": str(len(body)),
             "wsgi.input": io.BytesIO(body),
             "HTTP_COOKIE": "; ".join(f"{k}={v}" for k, v in self.cookies.items()),
@@ -61,7 +65,7 @@ class Client:
             captured["status"] = int(status.split(" ")[0])
             captured["headers"] = headers
 
-        raw = b"".join(webapp.app(environ, start_response))
+        raw_body = b"".join(webapp.app(environ, start_response))
         for name, value in captured["headers"]:
             if name.lower() != "set-cookie":
                 continue
@@ -70,10 +74,11 @@ class Client:
                     self.cookies.pop(key, None)
                 else:
                     self.cookies[key] = morsel.value
-        return captured["status"], dict(captured["headers"]), raw.decode("utf-8")
+        body = raw_body.decode("utf-8") if decode else raw_body
+        return captured["status"], dict(captured["headers"]), body
 
-    def get(self, path):
-        return self.request("GET", path)
+    def get(self, path, decode: bool = True):
+        return self.request("GET", path, decode=decode)
 
     def post(self, path, form=None):
         return self.request("POST", path, form or {})
@@ -171,32 +176,38 @@ class AppTest(unittest.TestCase):
         self.member.post("/admin/notices", {"body": "침입 공지"})
         self.assertFalse(any(n["body"] == "침입 공지" for n in store.list_notices()))
 
-    # ---------------- 화면 분리 ---------------- #
+    # ---------------- 화면 분리 ----------------
     def test_04_member_pages_are_split(self):
         _, _, home = self.member.get("/")
         self.assertIn("출석하기", home)
-        for time_label in ("08:30", "09:30", "18:30", "19:40"):
-            self.assertIn(time_label, home)
-        self.assertIn("/ 11", home)
-        # 오늘의 공지가 맨 위에 붙고, 그 아래 시간 선택 출석 폼이 온다
-        self.assertIn("📢 오늘의 공지", home)
-        self.assertIn('name="slot_id"', home)
-        self.assertLess(home.index("📢 오늘의 공지"), home.index('name="slot_id"'))
-        self.assertIn("✅ 시간 선택해서 출석하기", home)
-        self.assertNotIn("평일 자동 출석", home)      # /auto 로 분리
-        self.assertNotIn("회원 만들기", home)          # /admin/users 로 분리
+        self.assertIn('class="blocks"', home)
+        self.assertIn('href="/checkin"', home)
+        self.assertIn('href="/notices"', home)
+        self.assertIn('href="/auto"', home)
+        # 홈은 큰 블록만 두고 출석 폼은 /checkin 으로 분리
+        self.assertNotIn('name="slot_id"', home)
+        self.assertNotIn("평일 자동 출석", home)
+        # 상단 네비게이션 탭(navbar)은 없어진다
+        self.assertNotIn('class="tabs"', home)
+        self.assertNotIn("<nav", home)
+        self.assertNotIn("회원 만들기", home)
 
-        # 출석 전용 주소도 같은 화면을 보여 준다
+        # 출석 전용 주소: 위에 공지, 아래에 시간 선택
         status, _, checkin = self.member.get("/checkin")
         self.assertEqual(status, 200)
         self.assertIn("📢 오늘의 공지", checkin)
         self.assertIn('name="slot_id"', checkin)
-        self.assertIn("18:30", checkin)
-        self.assertNotIn("평일 자동 출석", checkin)
+        for time_label in ("08:30", "09:30", "18:30", "19:40"):
+            self.assertIn(time_label, checkin)
+        self.assertIn("✅ 시간 선택해서 출석하기", checkin)
+        self.assertLess(checkin.index("📢 오늘의 공지"), checkin.index('name="slot_id"'))
+        self.assertIn("뒤로", checkin)
+        self.assertNotIn('class="tabs"', checkin)
 
         _, _, notices = self.member.get("/notices")
         self.assertIn("오늘의 공지", notices)
         self.assertNotIn('name="slot_id"', notices)
+        self.assertIn("뒤로", notices)
 
         _, _, auto = self.member.get("/auto")
         self.assertIn("평일 자동 출석", auto)
@@ -206,9 +217,18 @@ class AppTest(unittest.TestCase):
         self.assertIn("내 정보", auto)
         self.assertNotIn('name="slot_id"', auto)
 
-        # 내비게이션 탭
-        self.assertIn('href="/notices"', home)
-        self.assertIn('href="/auto"', home)
+    def test_04b_home_blocks_follow_role(self):
+        _, _, member_home = self.member.get("/")
+        self.assertIn('href="/checkin"', member_home)
+        self.assertIn('href="/auto"', member_home)
+        self.assertNotIn('href="/admin"', member_home)
+        self.assertNotIn('href="/admin/notices"', member_home)
+
+        _, _, admin_home = self.admin.get("/")
+        for href in ('href="/admin"', 'href="/admin/notices"', 'href="/admin/users"',
+                     'href="/admin/users/new"'):
+            self.assertIn(href, admin_home)
+        self.assertIn("관리자", admin_home)
 
     def test_05_admin_pages_are_split(self):
         _, _, attendance = self.admin.get("/admin")
@@ -248,24 +268,29 @@ class AppTest(unittest.TestCase):
 
         status, headers, _ = self.member.post("/checkin", {"slot_id": "third"})
         self.assertEqual(status, 303)
-        self.assertEqual(headers["Location"], "/")
+        self.assertEqual(headers["Location"], "/checkin")
         self.assertEqual(store.get_day(day)["slots"][2]["taken"], before + 1)
 
-        _, _, html = self.member.get("/")
+        _, _, html = self.member.get("/checkin")
         self.assertIn("18:30 출석 완료!", html)
         self.assertIn("(나)", html)
         self.assertIn("출석 취소", html)
         self.assertIn("(출석함)", html)
 
+        # 홈 블록에도 오늘 출석 상태가 보인다
+        _, _, home = self.member.get("/")
+        self.assertIn("출석함", home)
+        self.assertIn("18:30", home)
+
         self.member.post("/checkin", {"slot_id": "third"})
-        _, _, html = self.member.get("/")
+        _, _, html = self.member.get("/checkin")
         self.assertIn("이미 18:30 타임에 출석했어요.", html)
 
         rows = [r for r in store.list_attendance(day) if r["username"] == "minjae"]
         self.assertEqual(len(rows), 1)
-        status, _, _ = self.member.post(f"/checkin/cancel/{rows[0]['id']}")
+        status, headers, _ = self.member.post(f"/checkin/cancel/{rows[0]['id']}")
         self.assertEqual(status, 303)
-        _, _, html = self.member.get("/")
+        _, _, html = self.member.get("/checkin")
         self.assertIn("출석을 취소했어요.", html)
         self.assertEqual(store.get_day(day)["slots"][2]["taken"], before)
 
@@ -289,10 +314,10 @@ class AppTest(unittest.TestCase):
         try:
             for user in made:
                 store.check_in(user["id"], day, "fourth")
-            _, _, html = self.member.get("/")
+            _, _, html = self.member.get("/checkin")
             self.assertIn("마감", html)
             self.member.post("/checkin", {"slot_id": "fourth"})
-            _, _, html = self.member.get("/")
+            _, _, html = self.member.get("/checkin")
             self.assertIn("19:40 타임은 정원이 다 찼어요", html)
         finally:
             for user in made:
@@ -304,10 +329,12 @@ class AppTest(unittest.TestCase):
         self.assertEqual(status, 303)
         _, _, html = self.member.get("/")
         self.assertIn("🚫 오늘은 전체 휴강입니다.", html)
-        self.assertNotIn('<button class="small">출석하기</button>', html)
+        _, _, checkin = self.member.get("/checkin")
+        self.assertIn("🚫 오늘은 전체 휴강입니다.", checkin)
+        self.assertIn("오늘은 전체 휴강이라 출석할 수 없습니다.", checkin)
 
         self.member.post("/checkin", {"slot_id": "third"})
-        _, _, html = self.member.get("/")
+        _, _, html = self.member.get("/checkin")
         self.assertIn("전체 휴강이라 출석할 수 없어요.", html)
         self.assertEqual(store.list_attendance(store.kst_today()), [])
 
@@ -321,11 +348,11 @@ class AppTest(unittest.TestCase):
         state = store.get_day(store.kst_today())
         self.assertEqual(sorted(state["blocked"]), ["first", "second"])
 
-        _, _, html = self.member.get("/")
+        _, _, html = self.member.get("/checkin")
         self.assertIn("휴강", html)
 
         self.member.post("/checkin", {"slot_id": "first"})
-        _, _, html = self.member.get("/")
+        _, _, html = self.member.get("/checkin")
         self.assertIn("08:30 타임은 오늘 휴강이에요.", html)
 
         status, _, _ = self.member.post("/checkin", {"slot_id": "third"})
@@ -341,7 +368,7 @@ class AppTest(unittest.TestCase):
         self.assertIn("오늘", html)
         _, _, home = self.member.get("/")
         self.assertIn("오늘 21시에 예약 글이 올라옵니다.", home)
-        self.assertIn("📢 오늘의 공지", home)
+        self.assertIn("공지사항", home)
 
         # 같은 날 다시 등록하면 내용만 바뀐다 (중복 카드 없음)
         self.admin.post("/admin/notices", {"body": "수정된 공지"})
@@ -363,6 +390,96 @@ class AppTest(unittest.TestCase):
         self.admin.post("/admin/notices", {"body": "  "})
         _, _, admin_html = self.admin.get("/admin/notices")
         self.assertIn("공지 내용을 입력해 주세요.", admin_html)
+
+    # ---------------- 공지 이미지 ---------------- #
+    PNG = ("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ"
+           "AAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
+
+    def _today_notice(self):
+        return next(n for n in store.list_notices() if n["posted_on"] == store.kst_today())
+
+    def test_11b_notice_image_upload_and_display(self):
+        status, _, _ = self.admin.post("/admin/notices", {"body": "사진 있는 공지", "image_data": self.PNG})
+        self.assertEqual(status, 303)
+        notice = self._today_notice()
+        self.assertEqual(notice["image_data"], self.PNG)
+
+        _, _, html = self.member.get("/notices")
+        self.assertIn('class="notice-img"', html)
+        self.assertIn(self.PNG, html)
+
+        _, _, home = self.member.get("/")
+        self.assertIn('class="thumb"', home)
+        self.assertIn(self.PNG, home)
+
+        _, _, checkin = self.member.get("/checkin")
+        self.assertIn('class="notice-img"', checkin)
+
+        # 관리자 화면에는 파일 선택·미리보기·이미지 삭제 UI 가 있다
+        _, _, admin_html = self.admin.get("/admin/notices")
+        self.assertIn('type="file"', admin_html)
+        self.assertIn('accept="image/*"', admin_html)
+        self.assertIn('name="image_data"', admin_html)
+        self.assertIn('name="remove_image"', admin_html)
+        self.assertIn('class="image-current"', admin_html)
+        self.assertIn('class="image-preview"', admin_html)
+
+        # 이미지를 새로 고르지 않고 저장하면 기존 이미지가 남는다
+        self.admin.post("/admin/notices", {"body": "본문만 고침", "image_data": ""})
+        notice = self._today_notice()
+        self.assertEqual(notice["image_data"], self.PNG)
+        self.assertEqual(notice["body"], "본문만 고침")
+
+        # 다른 공지 수정에서도 그림이 유지된다
+        other = store.set_notice("지난 공지", "관리자", posted_on="2026-01-01", image_data=self.PNG)
+        self.admin.post(f"/admin/notices/{other['id']}", {"body": "지난 공지 고침"})
+        self.assertEqual(store.get_notice(other["id"])["image_data"], self.PNG)
+
+        # 삭제 체크하면 이미지만 빠진다
+        self.admin.post("/admin/notices", {"body": "사진 지움", "image_data": "", "remove_image": "1"})
+        self.assertEqual(self._today_notice()["image_data"], "")
+        _, _, html = self.member.get("/notices")
+        self.assertNotIn('class="notice-img"', html.split("지난 공지")[0])
+
+    def test_11c_notice_image_validation_and_permissions(self):
+        # 지원하지 않는 형식
+        self.admin.post("/admin/notices", {"body": "형식 오류",
+                                            "image_data": "data:image/svg+xml;base64,PHN2Zz48L3N2Zz4="})
+        _, _, admin_html = self.admin.get("/admin/notices")
+        self.assertIn("이미지 형식이 올바르지 않아요", admin_html)
+        self.assertEqual(self._today_notice()["body"], store.SEED_NOTICE)
+        self.assertEqual(self._today_notice()["image_data"], "")
+
+        # 800KB 초과
+        huge = "data:image/png;base64," + "A" * (800 * 1024)
+        self.admin.post("/admin/notices", {"body": "큰 이미지", "image_data": huge})
+        _, _, admin_html = self.admin.get("/admin/notices")
+        self.assertIn("이미지가 너무 커요", admin_html)
+        self.assertEqual(self._today_notice()["body"], store.SEED_NOTICE)
+
+        # base64 가 깨진 값
+        self.admin.post("/admin/notices", {"body": "깨진 이미지", "image_data": "data:image/png;base64,AAA"})
+        _, _, admin_html = self.admin.get("/admin/notices")
+        self.assertIn("이미지를 읽지 못했어요", admin_html)
+        self.assertEqual(self._today_notice()["body"], store.SEED_NOTICE)
+
+        # data:image 가 아닌 값
+        self.admin.post("/admin/notices", {"body": "이상한 값", "image_data": "javascript:alert(1)"})
+        _, _, admin_html = self.admin.get("/admin/notices")
+        self.assertIn("이미지 형식이 올바르지 않아요", admin_html)
+        self.assertEqual(self._today_notice()["body"], store.SEED_NOTICE)
+
+        # 일반 회원은 공지를 올릴 수 없다 (이미지 포함)
+        self.member.post("/admin/notices", {"body": "회원 공지", "image_data": self.PNG})
+        self.assertFalse(any(n["body"] == "회원 공지" for n in store.list_notices()))
+
+        # multipart/form-data 요청은 읽지 않고 넘어가 기존 공지를 지우지 않는다
+        raw = (b"--x\r\nContent-Disposition: form-data; name=\"body\"\r\n\r\nmultipart test\r\n"
+               b"--x--\r\n")
+        status, _, _ = self.admin.request("POST", "/admin/notices", raw=raw,
+                                          ctype="multipart/form-data; boundary=x")
+        self.assertEqual(status, 303)
+        self.assertEqual(self._today_notice()["body"], store.SEED_NOTICE)
 
     # ---------------- 회원 관리 ---------------- #
     def test_12_admin_user_crud(self):
@@ -415,6 +532,68 @@ class AppTest(unittest.TestCase):
         self.assertIn("닉네임을 입력해 주세요.", html)
         self.assertIn("민재짱", html)
         self.member.post("/profile", {"nickname": "민재"})
+
+    # ---------------- PWA ---------------- #
+    def test_16_pwa_manifest_service_worker_icons(self):
+        guest = Client()
+        status, headers, body = guest.get("/manifest.webmanifest")
+        self.assertEqual(status, 200)
+        self.assertIn("manifest+json", headers["Content-Type"])
+        manifest = json.loads(body)
+        self.assertEqual(manifest["name"], "온점핑 출석")
+        self.assertEqual(manifest["short_name"], "온점핑")
+        self.assertEqual(manifest["start_url"], "/")
+        self.assertEqual(manifest["display"], "standalone")
+        self.assertEqual(manifest["theme_color"], "#5865f2")
+        self.assertEqual(manifest["background_color"], "#f3f5f9")
+        self.assertEqual({icon["sizes"] for icon in manifest["icons"]}, {"192x192", "512x512"})
+        for icon in manifest["icons"]:
+            self.assertTrue(icon["src"].startswith("/icons/"))
+            self.assertEqual(icon["type"], "image/png")
+
+        # 서비스 워커: 자바스크립트 타입 + install/activate/fetch 핸들러
+        status, headers, body = guest.get("/sw.js")
+        self.assertEqual(status, 200)
+        self.assertIn("javascript", headers["Content-Type"])
+        for marker in ("install", "activate", "fetch", "skipWaiting", "clients.claim"):
+            self.assertIn(marker, body)
+        self.assertEqual(headers.get("Service-Worker-Allowed"), "/")
+
+        # 아이콘: 실제 PNG 200 응답
+        for path in ("/icons/icon-192.png", "/icons/icon-512.png", "/icons/apple-touch-icon.png"):
+            status, headers, data = guest.get(path, decode=False)
+            self.assertEqual(status, 200, path)
+            self.assertEqual(headers["Content-Type"], "image/png", path)
+            self.assertTrue(data.startswith(b"\x89PNG\r\n\x1a\n"), path)
+            self.assertGreater(len(data), 1000, path)
+
+        status, _, _ = guest.get("/icons/nope.png")
+        self.assertEqual(status, 404)
+
+    def test_17_pwa_meta_tags_and_install_ui(self):
+        expected = (
+            '<link rel="manifest" href="/manifest.webmanifest">',
+            '<meta name="theme-color" content="#5865f2">',
+            '<meta name="apple-mobile-web-app-capable" content="yes">',
+            '<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">',
+            "navigator.serviceWorker.register('/sw.js')",
+        )
+        pages = [Client().get("/login")[2], self.member.get("/")[2],
+                 self.member.get("/checkin")[2], self.admin.get("/admin/notices")[2]]
+        for html in pages:
+            for tag in expected:
+                self.assertIn(tag, html)
+            # 네비게이션 탭은 어느 화면에도 없다
+            self.assertNotIn('class="tabs"', html)
+
+        login = Client().get("/login")[2]
+        home = self.member.get("/")[2]
+        for html in (login, home):
+            self.assertIn("앱 다운로드", html)
+            self.assertIn('data-install-open', html)
+            self.assertIn('id="install-modal"', html)
+            self.assertIn("앱 설치하기 (PWA)", html)
+            self.assertIn("beforeinstallprompt", html)
 
     # ---------------- 기타 ---------------- #
     def test_14_health_and_404(self):

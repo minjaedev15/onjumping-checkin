@@ -18,7 +18,8 @@
     seq            users / attendance / notices 의 다음 id
     users          [{id, username, password_hash, nickname, is_admin, weekly, created_at}]
     attendance     [{id, user_id, day, slot_id, created_at}]
-    notices        [{id, body, posted_on, author, created_at, updated_at}]
+    notices        [{id, body, image_data, posted_on, author, created_at, updated_at}]
+                   image_data 는 선택 항목이며 `data:image/...;base64,...` 형식의 문자열이다.
     day_controls   {day: {closed_all, note, updated_at}}
     slot_blocks    {day: [slot_id, ...]}
     settings       {secret: ...}  (SESSION_SECRET 환경변수가 없을 때만)
@@ -67,7 +68,7 @@ DEFAULT_SLOT_ID = "third"
 
 DEFAULT_WEEKLY = {"mon": "third", "tue": "third", "wed": "third", "thu": "third", "fri": "third"}
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 STATE_KEY = os.environ.get("ONJUMPING_STATE_KEY") or "onjumping:state:v1"
 
 ADMIN_USERNAME = "admin"
@@ -609,6 +610,7 @@ def _notice_public(notice: dict) -> dict:
     return {
         "id": notice["id"],
         "body": notice["body"],
+        "image_data": notice.get("image_data") or "",
         "posted_on": notice.get("posted_on", ""),
         "author": notice.get("author", ""),
         "updated_at": notice.get("updated_at", ""),
@@ -644,8 +646,22 @@ def get_notice(notice_id: int) -> dict | None:
     return _read(fn)
 
 
-def set_notice(body: str, author: str, posted_on: str | None = None) -> dict:
-    """오늘 공지를 등록한다. 같은 날짜 공지가 이미 있으면 내용만 바꾼다."""
+def _apply_image(notice: dict, image_data: str | None) -> None:
+    """이미지 변경. None 이면 그대로 두고, 빈 문자열이면 지운다."""
+    if image_data is None:
+        return
+    if image_data:
+        notice["image_data"] = image_data
+    else:
+        notice.pop("image_data", None)
+
+
+def set_notice(body: str, author: str, posted_on: str | None = None,
+               image_data: str | None = None) -> dict:
+    """오늘 공지를 등록한다. 같은 날짜 공지가 이미 있으면 내용만 바꾼다.
+
+    image_data 가 None 이면 기존 이미지를 그대로 두고, 빈 문자열이면 지운다.
+    """
     posted_on = posted_on or kst_today()
     body = _clean_text(body)
 
@@ -656,6 +672,7 @@ def set_notice(body: str, author: str, posted_on: str | None = None) -> dict:
             notice = max(same_day, key=lambda n: n.get("id", 0))
             notice["body"] = body
             notice["author"] = author
+            _apply_image(notice, image_data)
             notice["updated_at"] = now
             return _notice_public(notice), True
         notice = {
@@ -666,13 +683,14 @@ def set_notice(body: str, author: str, posted_on: str | None = None) -> dict:
             "created_at": now,
             "updated_at": now,
         }
+        _apply_image(notice, image_data)
         doc["notices"].append(notice)
         return _notice_public(notice), True
 
     return _mutate(fn)
 
 
-def update_notice(notice_id: int, body: str) -> dict | None:
+def update_notice(notice_id: int, body: str, image_data: str | None = None) -> dict | None:
     body = _clean_text(body)
 
     def fn(doc):
@@ -680,6 +698,7 @@ def update_notice(notice_id: int, body: str) -> dict | None:
         if notice is None or not body:
             return None, False
         notice["body"] = body
+        _apply_image(notice, image_data)
         notice["updated_at"] = _now()
         return _notice_public(notice), True
 

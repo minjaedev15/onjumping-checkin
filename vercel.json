@@ -8,7 +8,8 @@
         "includeFiles": [
           "store.py",
           "webapp.py",
-          "config.json"
+          "config.json",
+          "static/**"
         ]
       }
     }

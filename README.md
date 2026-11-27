@@ -7,7 +7,7 @@
 - 라이브: **https://onjumping.vercel.app**
 - 저장소: https://github.com/minjaedev15/onjumping-checkin
 
-| 로그인 | 회원 · 오늘 출석 | 관리자 · 출석/휴강 |
+| 로그인 | 회원 홈(블록) | 관리자 홈 |
 |---|---|---|
 | ![로그인](docs/screenshots/login.png) | ![회원 화면](docs/screenshots/member.png) | ![관리자 화면](docs/screenshots/admin.png) |
 
@@ -15,15 +15,45 @@
 
 | 경로 | 누구나 | 내용 |
 |---|---|---|
-| `/login` | — | 아이디·비밀번호 로그인 (힌트·테스트 계정 안내 없음) |
-| `/` | 회원 | 오늘 날짜, 4개 타임(08:30 · 09:30 · 18:30 · 19:40) 출석/취소와 타임별 현황, 오늘의 공지 요약 |
-| `/notices` | 회원 | 오늘의 공지 + 지난 공지 목록 |
+| `/login` | — | 아이디·비밀번호 로그인 (힌트·테스트 계정 안내 없음), 아래에 `앱 다운로드` 버튼 |
+| `/` | 회원 | 안드로이드 앱 홈처럼 큰 **블록** 메뉴. 공지 요약(이미지 썸네일) · 출석하기 · 자동 출석 · 관리자 블록 · 앱 다운로드 |
+| `/checkin` | 회원 | 오늘의 공지(이미지 포함) 아래 시간 선택 출석 및 취소, 타임별 현황 |
+| `/notices` | 회원 | 오늘의 공지 + 지난 공지 목록 (첨부 이미지 표시) |
 | `/auto` | 회원 | 평일(월~금) 자동 출석 타임 설정, 닉네임 변경 |
 | `/admin` | 관리자 | 오늘 타임별 출석 명단(취소 포함), 전체/타임별 휴강 제어 |
-| `/admin/notices` | 관리자 | 공지 등록·수정·삭제 |
+| `/admin/notices` | 관리자 | 공지 등록·수정·삭제, 이미지 첨부(자동 리사이즈·압축) |
 | `/admin/users` | 관리자 | 회원 생성·목록·삭제 |
 
-관리자로 로그인하면 상단 탭에 `출석·휴강 · 공지 관리 · 회원`이 함께 나옵니다.
+상단 네비게이션 바(navbar)는 없습니다. 홈은 블록 대시보드이고, 각 하위 화면은
+`← 뒤로`(홈)와 화면 제목만 있는 앱바를 씁니다.
+
+## PWA (앱 설치)
+
+홈과 로그인 화면의 **`앱 다운로드`** 버튼을 누르면 설치 패널이 열리고, 그 안의
+**`앱 설치하기 (PWA)`** 버튼으로 홈 화면에 설치할 수 있습니다.
+
+- Chrome/Edge/Android: `beforeinstallprompt` 를 잡아 두었다가 버튼을 누르면 바로
+  설치 확인 창을 띄웁니다.
+- iOS Safari: 자동 설치 창이 없어 `공유 → 홈 화면에 추가` 순서를 패널에 표시합니다.
+- 데스크톱·기타 브라우저나 설치 창을 아직 못 잡은 경우: 브라우저 메뉴의
+  `앱 설치` / `홈 화면에 추가` 안내를 보여 줍니다.
+- 이미 standalone 으로 실행 중이면 "이미 앱으로 실행 중"으로 표시합니다.
+
+| 파일 | 내용 |
+|---|---|
+| `/manifest.webmanifest` | 이름 `온점핑 출석`, `start_url: /`, `display: standalone`, `#5865f2`, 192·512 아이콘 |
+| `/sw.js` | 서비스 워커 (install · activate · fetch, 네트워크 우선 + 캐시 대체) |
+| `/icons/icon-192.png` · `/icons/icon-512.png` · `/icons/apple-touch-icon.png` | 앱 아이콘 |
+
+모든 페이지 `<head>` 에 manifest · theme-color · apple-touch-icon · apple-mobile-web-app
+메타 태그를 넣고, `/sw.js` 를 등록합니다. PWA 설치는 HTTPS(Vercel 도메인)에서 동작합니다.
+
+## 공지 이미지
+
+관리자 공지 화면에서 사진을 고르면 브라우저가 캔버스로 긴 변 1080px · 목표 400KB
+이하 JPEG 로 줄여 hidden input(`image_data`, data URI)에 넣고, 서버가 형식과 크기를
+다시 검증합니다(최대 800KB, PNG·JPG·WEBP·GIF). 공지 수정 시 이미지를 새로 고르지
+않으면 기존 이미지가 유지되고, `이 이미지 지우기` 로 뺄 수 있습니다.
 
 ## 계정과 비밀번호
 
@@ -78,7 +108,7 @@ ADMIN_PASSWORD=원하는비번 SESSION_SECRET=아무긴문자열 python server.p
 python -m unittest discover tests -v
 ```
 
-- `tests/test_api.py` — 로그인, 권한, 화면 분리, 출석/취소, 휴강, 공지, 회원 관리
+- `tests/test_api.py` — 로그인, 권한, 블록 홈/화면 분리, 출석/취소, 휴강, 공지·공지 이미지, PWA(매니페스트·서비스 워커·아이콘·설치 UI), 회원 관리
 - `tests/test_store.py` — 문서 저장·재조회, CAS 재시도, (환경변수가 있으면) 실제 Upstash
 - `tests/test_checker.py` — 밴드 글 파싱
 
@@ -133,6 +163,7 @@ api/index.py     Vercel 서버리스 진입점
 checker.py       Playwright 밴드 자동 예약 워커
 config.json      자동 예약 설정 (실행 시각 · 대상 날짜 · 밴드 주소)
 tests/           test_api.py · test_store.py · test_checker.py
+static/          PWA: manifest.webmanifest · sw.js · icons/
 tools/visual_qa.py  로컬 화면 캡처 (개발용, 비밀번호는 환경변수)
 ```
 
