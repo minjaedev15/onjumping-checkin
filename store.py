@@ -402,6 +402,7 @@ def _public(user: dict) -> dict:
         "username": user["username"],
         "nickname": user.get("nickname") or user["username"],
         "is_admin": bool(user.get("is_admin")),
+        "session_version": int(user.get("session_version") or 0),
         "weekly": {d: (weekly.get(d) if weekly.get(d) in SLOT_BY_ID else None) for d in WEEKDAY_KEYS},
         "created_at": user.get("created_at", ""),
     }
@@ -420,6 +421,7 @@ def _add_user(doc: dict, username: str, password_hash: str, nickname: str = "", 
         "password_hash": password_hash,
         "nickname": nickname or username,
         "is_admin": bool(is_admin),
+        "session_version": 0,
         "weekly": dict(DEFAULT_WEEKLY),
         "created_at": _now(),
     }
@@ -576,6 +578,26 @@ def create_user(username: str, password: str, nickname: str = "", is_admin: bool
         user = _add_user(doc, username, hash_password(password), (nickname or "").strip()[:20], is_admin)
         return _public(user), True
 
+    return _mutate(fn)
+
+
+def get_session_version(user_id: int) -> int:
+    """사용자의 현재 세션 버전. 필드가 없는 예전 문서는 0으로 본다."""
+    def fn(doc):
+        found = _find_user(doc, user_id)
+        return (int(found.get("session_version") or 0) if found else 0), False
+    return _read(fn)
+
+
+def bump_session_version(user_id: int) -> int:
+    """세션 버전을 올려 지금까지 발급한 쿠키를 모두 무효로 만든다."""
+    def fn(doc):
+        found = _find_user(doc, user_id)
+        if found is None:
+            return 0, False
+        value = int(found.get("session_version") or 0) + 1
+        found["session_version"] = value
+        return value, True
     return _mutate(fn)
 
 

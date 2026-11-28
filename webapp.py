@@ -27,11 +27,24 @@ from http.cookies import SimpleCookie
 from pathlib import Path
 
 import store
+import secrets
+import threading
+import time
 
 COOKIE = "onjumping_uid"
 FLASH = "onjumping_flash"
-SESSION_MAX_AGE = 60 * 60 * 24 * 30
+SESSION_MAX_AGE = 60 * 60 * 24 * 7
 SECURE_COOKIE = bool(os.environ.get("VERCEL"))
+
+_REQUEST = threading.local()
+
+
+def current_nonce() -> str:
+    nonce = getattr(_REQUEST, "nonce", None)
+    if not nonce:
+        nonce = secrets.token_hex(16)
+        _REQUEST.nonce = nonce
+    return nonce
 
 REASONS = {
     200: "OK", 201: "Created", 303: "See Other", 400: "Bad Request",
@@ -91,6 +104,17 @@ body {
     border-radius: 9px;
 }
 .who a:hover { background: rgba(255, 255, 255, 0.14); }
+.who form.logout-form { margin: 0; }
+.who button {
+    color: #dfe3ff;
+    background: none;
+    border: 0;
+    font: inherit;
+    padding: 7px 10px;
+    border-radius: 9px;
+    cursor: pointer;
+}
+.who button:hover { background: rgba(255, 255, 255, 0.14); }
 
 /* ---------- 서브 화면 앱바 (← 뒤로 + 제목) ---------- */
 .appbar {
@@ -823,6 +847,15 @@ STATIC_FILES = {
 # 응답 / 쿠키
 # --------------------------------------------------------------------------- #
 
+def _csp() -> str:
+    nonce = current_nonce()
+    return ("default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; "
+            "form-action 'self'; "
+            f"script-src 'self' 'nonce-{nonce}'; style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; "
+            "manifest-src 'self'; worker-src 'self'")
+
+
 class Response:
     def __init__(self, body: str = "", status: int = 200, ctype: str = "text/html; charset=utf-8"):
         self.body = body.encode("utf-8") if isinstance(body, str) else body
@@ -856,6 +889,9 @@ class Response:
             ("Content-Length", str(len(self.body))),
             ("X-Content-Type-Options", "nosniff"),
             ("Referrer-Policy", "same-origin"),
+            ("X-Frame-Options", "DENY"),
+            ("Permissions-Policy", "geolocation=(), camera=(), microphone=(), payment=(), usb=()"),
+            ("Content-Security-Policy", _csp()),
         ]
         if not any(name.lower() == "cache-control" for name, _ in self.headers):
             headers.append(("Cache-Control", "no-store"))
@@ -915,12 +951,14 @@ def _sign(value: str) -> str:
     return hmac.new(store.get_secret().encode("utf-8"), value.encode("utf-8"), hashlib.sha256).hexdigest()[:32]
 
 
-def session_cookie(user_id: int) -> str:
-    raw = str(user_id)
-    return f"{raw}.{_sign(raw)}"
+def session_cookie(user_id: int, session_version: int = 0) -> str:
+    """v1.{uid}.{exp}.{sv}.{sig} — 서버가 만료와 폐기를 검증하는 서명 쿠키."""
+    payload = f"v1.{int(user_id)}.{int(time.time()) + SESSION_MAX_AGE}.{int(session_version)}"
+    return f"{payload}.{_sign(payload)}"
 
 
-def parse_session(environ) -> int | None:
+def parse_session(environ) -> dict | None:
+    """쿠키를 검증해 {'uid': int, 'sv': int} 를 돌려준다. 만료·위조·구형 쿠키는 None."""
     header = environ.get("HTTP_COOKIE", "")
     if not header:
         return None
@@ -928,12 +966,38 @@ def parse_session(environ) -> int | None:
         morsel = SimpleCookie(header).get(COOKIE)
     except Exception:
         return None
-    if not morsel or "." not in morsel.value:
+    if not morsel or not morsel.value:
         return None
-    raw, signature = morsel.value.split(".", 1)
-    if not raw.isdigit() or not hmac.compare_digest(_sign(raw), signature):
+    parts = morsel.value.split(".")
+    if len(parts) != 5 or parts[0] != "v1":
         return None
-    return int(raw)
+    _, raw_uid, raw_exp, raw_sv, signature = parts
+    if not (raw_uid.isdigit() and raw_exp.isdigit() and raw_sv.isdigit()):
+        return None
+    payload = f"v1.{raw_uid}.{raw_exp}.{raw_sv}"
+    if not hmac.compare_digest(_sign(payload), signature):
+        return None
+    if int(raw_exp) < int(time.time()):
+        return None
+    return {"uid": int(raw_uid), "sv": int(raw_sv)}
+
+
+def csrf_token(user: dict) -> str:
+    """세션(사용자·세션 버전)에 묶인 CSRF 토큰. 비밀키 없이는 만들 수 없다."""
+    return _sign(f"csrf:{int(user['id'])}:{int(user.get('session_version') or 0)}")
+
+
+def csrf_field(user: dict) -> str:
+    return f'<input type="hidden" name="csrf" value="{csrf_token(user)}">'
+
+
+def csrf_ok(form: dict[str, list[str]], user: dict | None) -> bool:
+    if not user:
+        return False
+    submitted = form_value(form, "csrf")
+    if not submitted:
+        return False
+    return hmac.compare_digest(csrf_token(user), submitted)
 
 
 def read_flash(environ) -> tuple[str, bool]:
@@ -982,7 +1046,8 @@ def header(user: dict | None, wide: bool = False) -> str:
     if user:
         who = (
             f'<div class="who"><b>{esc(user["nickname"])}</b>님'
-            f'<a href="/logout">로그아웃</a></div>'
+            f'<form method="POST" action="/logout" class="logout-form">'
+            f'{csrf_field(user)}<button type="submit">로그아웃</button></form></div>'
         )
     cls = "topbar wide" if wide else "topbar"
     return (
@@ -1012,7 +1077,7 @@ def page(content: str, *, title: str = "온점핑 출석", user: dict | None = N
         flash_html = f'<div class="message{" error" if error else ""}">{esc(flash)}</div>'
     container = 'class="container wide"' if wide else 'class="container"'
     head = app_bar(appbar_title, wide) if appbar_title else header(user, wide)
-    script_html = f"<script>{PWA_JS}\n{script}</script>\n"
+    script_html = f'<script nonce="{current_nonce()}">{PWA_JS}\n{script}</script>\n'
     return (
         "<!DOCTYPE html>\n"
         '<html lang="ko">\n<head>\n<meta charset="UTF-8">\n'
@@ -1081,7 +1146,7 @@ def render_login(flash: str = "", error: bool = False) -> Response:
         '<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">\n'
         f"{HEAD_TAGS}<title>로그인 · 온점핑 출석</title>\n<style>{CSS}</style>\n</head>\n<body>\n"
         f"{header(None)}\n<main class=\"container\">{content}</main>\n"
-        f"<script>{PWA_JS}</script>\n"
+        f'<script nonce="{current_nonce()}">{PWA_JS}</script>\n'
         "</body>\n</html>\n"
     )
 
@@ -1316,6 +1381,7 @@ def render_checkin(user: dict, flash: str = "", error: bool = False) -> Response
             <div class="list-main"><b>{slot["time"]}</b> <span class="muted">{slot["name"]}</span>
                 <span class="badge">출석함</span></div>
             <form method="POST" action="/checkin/cancel/{record["id"]}">
+                {csrf_field(user)}
                 <button class="small ghost">출석 취소</button>
             </form>
         </div>"""
@@ -1324,6 +1390,7 @@ def render_checkin(user: dict, flash: str = "", error: bool = False) -> Response
 <div class="card">
     <h2>✅ 시간 선택해서 출석하기{done_badge}</h2>
     <form method="POST" action="/checkin">
+        {csrf_field(user)}
         <select name="slot_id" aria-label="출석 타임"{select_disabled}>
             {''.join(options)}
         </select>
@@ -1425,6 +1492,7 @@ def render_auto(user: dict, flash: str = "", error: bool = False) -> Response:
 <div class="card">
     <h2>🗓️ 평일 자동 출석</h2>
     <form method="POST" action="/auto">
+        {csrf_field(user)}
         <div class="week-grid">{columns}</div>
         <button class="wide" style="margin-top:14px">저장</button>
     </form>
@@ -1438,6 +1506,7 @@ def render_auto(user: dict, flash: str = "", error: bool = False) -> Response:
         <div class="list-main"><b>{esc(user['nickname'])}</b><span class="meta">@{esc(user['username'])}</span></div>
     </div>
     <form method="POST" action="/profile">
+        {csrf_field(user)}
         <input name="nickname" value="{esc(user['nickname'])}" maxlength="20"
                placeholder="닉네임" aria-label="닉네임">
         <button class="wide" style="margin-top:8px">닉네임 변경</button>
@@ -1477,6 +1546,7 @@ def render_admin(user: dict, flash: str = "", error: bool = False) -> Response:
 <div class="card">
     <h2>🚫 휴강 제어</h2>
     <form method="POST" action="/admin/day">
+        {csrf_field(user)}
         <label class="toggle-row">
             <span><b>오늘 전체 휴강</b></span>
             <input type="checkbox" name="closed_all" value="1"{" checked" if state["closed_all"] else ""}
@@ -1505,6 +1575,7 @@ def render_admin(user: dict, flash: str = "", error: bool = False) -> Response:
             <div class="list-main"><b>{esc(person['nickname'])}</b>
                 <span class="meta">@{esc(person['username'])}</span></div>
             <form method="POST" action="/checkin/cancel/{person['id']}">
+                {csrf_field(user)}
                 <button class="small ghost">취소</button>
             </form>
         </div>"""
@@ -1563,6 +1634,7 @@ def render_admin_notices(user: dict, flash: str = "", error: bool = False) -> Re
 <div class="card">
     <h2>📢 오늘의 공지</h2>
     <form class="notice-form" method="POST" action="/admin/notices">
+        {csrf_field(user)}
         <textarea name="body" placeholder="오늘의 공지를 입력하세요" required>{value}</textarea>
         {_image_fields(today_notice)}
         <button class="wide" style="margin-top:8px">{"공지 수정" if today_notice else "공지 등록"}</button>
@@ -1579,11 +1651,13 @@ def render_admin_notices(user: dict, flash: str = "", error: bool = False) -> Re
     <h3>{notice['posted_on']}{badge}</h3>
     <p class="meta">{esc(notice['author'])} · 수정 {notice['updated_at'][:16].replace('T', ' ')}</p>
     <form class="notice-form" method="POST" action="/admin/notices/{notice['id']}">
+        {csrf_field(user)}
         <textarea name="body" required>{esc(notice['body'])}</textarea>
         {_image_fields(notice)}
         <button class="wide" style="margin-top:8px">저장</button>
     </form>
     <form method="POST" action="/admin/notices/{notice['id']}/delete" style="margin-top:8px">
+        {csrf_field(user)}
         <button class="wide ghost">삭제</button>
     </form>
 </div>""")
@@ -1615,6 +1689,7 @@ def render_admin_users(user: dict, flash: str = "", error: bool = False) -> Resp
         if not member["is_admin"]:
             delete = f"""
         <form method="POST" action="/admin/users/{member['id']}/delete">
+            {csrf_field(user)}
             <button class="small ghost">삭제</button>
         </form>"""
         rows_html += f"""
@@ -1641,10 +1716,11 @@ def render_admin_users(user: dict, flash: str = "", error: bool = False) -> Resp
 def render_admin_user_new(user: dict, flash: str = "", error: bool = False) -> Response:
     parts = [
         page_note("새 회원 계정을 만듭니다. 만든 뒤 회원 목록에서 확인할 수 있어요."),
-        """
+        f"""
 <div class="card">
     <h2>➕ 회원 만들기</h2>
     <form method="POST" action="/admin/users">
+        {csrf_field(user)}
         <input name="username" placeholder="아이디 (영문 소문자·숫자·밑줄 3~20자)"
                autocapitalize="none" required>
         <input name="password" type="password" placeholder="비밀번호 (4자 이상)" minlength="4" required>
@@ -1693,9 +1769,17 @@ def route(method: str, path: str, form: dict[str, list[str]], user: dict | None,
                 return render_login("아이디 또는 비밀번호가 틀렸습니다.", error=True)
             target = "/admin" if found["is_admin"] else "/"
             resp = redirect(target, f"{found['nickname']}님, 반가워요!")
-            return resp.set_cookie(COOKIE, session_cookie(found["id"]))
+            return resp.set_cookie(COOKIE, session_cookie(found["id"], found.get("session_version") or 0))
 
     if path == "/logout":
+        if method != "POST":
+            # 로그아웃은 POST(CSRF 토큰)로만 한다. GET 은 상태를 바꾸지 않는다.
+            return redirect("/" if user else "/login")
+        if user:
+            try:
+                store.bump_session_version(user["id"])
+            except store.StoreError:
+                pass
         resp = redirect("/login", "로그아웃했습니다.")
         return resp.clear_cookie(COOKIE)
 
@@ -1855,6 +1939,13 @@ def route(method: str, path: str, form: dict[str, list[str]], user: dict | None,
     return Response(page(content, title="404 · On점핑 출석", user=user, flash=flash), 404)
 
 
+def _forbidden_page() -> Response:
+    content = ('<div class="card"><h2>요청을 확인하지 못했어요.</h2>'
+               '<p class="small">화면을 새로 고친 뒤 다시 시도해 주세요.</p>'
+               '<p class="small"><a href="/">출석 화면으로 →</a></p></div>')
+    return Response(page(content, title="403 · 온점핑 출석"), 403)
+
+
 def _error_page(exc: Exception) -> Response:
     if isinstance(exc, store.StoreBusy):
         message = "저장이 잠시 겹쳤어요. 잠시 뒤 다시 시도해 주세요."
@@ -1875,12 +1966,29 @@ def app(environ, start_response):
     if len(path) > 1 and path.endswith("/"):
         path = path.rstrip("/")
 
+    _REQUEST.nonce = None
     store.begin_request()
     try:
         store.init_db()
-        user = store.get_user(parse_session(environ))
+        session = parse_session(environ)
+        user = store.get_user(session["uid"]) if session else None
+        if user and int(user.get("session_version") or 0) != session["sv"]:
+            user = None  # 로그아웃·폐기된 세션은 손님으로 본다
         flash, flash_error = read_flash(environ)
         form = read_form(environ) if method == "POST" else {}
+
+        # 상태를 바꾸는 POST 는 모두 CSRF 토큰을 확인한다(로그인은 예외).
+        if method == "POST" and path != "/login":
+            if not user:
+                return redirect("/login")(environ, start_response)
+            origin = environ.get("HTTP_ORIGIN")
+            host = environ.get("HTTP_HOST")
+            if origin and host:
+                parsed = urllib.parse.urlsplit(origin)
+                if parsed.scheme not in ("http", "https") or parsed.netloc != host:
+                    return _forbidden_page()(environ, start_response)
+            if not csrf_ok(form, user):
+                return _forbidden_page()(environ, start_response)
 
         try:
             resp = route(method, path, form, user, flash, flash_error)

@@ -81,13 +81,28 @@ class Client:
         return self.request("GET", path, decode=decode)
 
     def post(self, path, form=None):
-        return self.request("POST", path, form or {})
+        data = dict(form or {})
+        if path != "/login" and getattr(self, "csrf", None):
+            data.setdefault("csrf", self.csrf)
+        return self.request("POST", path, data)
 
     def login(self, username: str, password: str):
         status, headers, _ = self.post("/login", {"username": username, "password": password})
         assert status == 303, (status, headers)
         self.last_login_target = headers.get("Location")
+        _, _, html = self.get(headers.get("Location") or "/")
+        self.csrf = webapp_token(html)
         return self
+
+
+def webapp_token(html: str) -> str:
+    """페이지에 렌더된 CSRF 토큰을 꺼낸다."""
+    marker = 'name="csrf" value="'
+    start = html.find(marker)
+    if start < 0:
+        return ""
+    start += len(marker)
+    return html[start:html.index('"', start)]
 
 
 def flash_text(html: str) -> str:
@@ -142,16 +157,23 @@ class AppTest(unittest.TestCase):
         self.assertEqual(status, 303)
         self.assertEqual(headers["Location"], "/admin")
         self.assertIn("onjumping_uid", guest.cookies)
+        guest.csrf = webapp_token(guest.get("/admin")[2])  # 직접 로그인한 클라이언트의 토큰
 
         status, _, html = guest.get("/admin")
         self.assertEqual(status, 200)
         self.assertIn("출석·휴강", html)
 
+        # GET /logout 은 상태를 바꾸지 않는다
         status, headers, _ = guest.get("/logout")
+        self.assertEqual(status, 303)
+        self.assertEqual(guest.get("/")[0], 200)
+        # 로그아웃은 POST + CSRF 토큰
+        status, headers, _ = guest.post("/logout")
         self.assertEqual(status, 303)
         self.assertEqual(headers["Location"], "/login")
         status, headers, _ = guest.get("/")
         self.assertEqual(status, 303)
+        self.assertEqual(headers["Location"], "/login")
 
     def test_02_forged_cookie_is_rejected(self):
         guest = Client()
@@ -514,7 +536,8 @@ class AppTest(unittest.TestCase):
                b"--x--\r\n")
         status, _, _ = self.admin.request("POST", "/admin/notices", raw=raw,
                                           ctype="multipart/form-data; boundary=x")
-        self.assertEqual(status, 303)
+        # CSRF 토큰이 없는 multipart 는 403 이고 저장은 일어나지 않는다
+        self.assertEqual(status, 403)
         self.assertEqual(self._today_notice()["body"], store.SEED_NOTICE)
 
     # ---------------- 회원 관리 ---------------- #
